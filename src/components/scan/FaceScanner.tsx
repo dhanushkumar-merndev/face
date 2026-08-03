@@ -64,6 +64,14 @@ export function FaceScanner({
   const [recordingStep, setRecordingStep] = useState<ChallengeStep | null>(null);
   const [capturedSteps, setCapturedSteps] = useState<ChallengeStep[]>([]);
   const [flashStep, setFlashStep] = useState<ChallengeStep | null>(null);
+  const [cameraWarning, setCameraWarning] = useState<string | null>(null);
+
+  // Temporary on-screen debug log for mobile
+  const [debugLog, setDebugLog] = useState<string[]>([]);
+  const pushLog = useCallback((msg: string) => {
+    const ts = new Date().toLocaleTimeString();
+    setDebugLog((prev) => [...prev.slice(-30), `[${ts}] ${msg}`]);
+  }, []);
 
   const [state, dispatch] = useReducer(reducer, undefined, () => initialState);
   const stateRef = useRef(state);
@@ -139,7 +147,10 @@ export function FaceScanner({
             minTrackingConfidence: 0.5,
           });
         }
-        if (!cancelled) setLandmarker(lm);
+        if (!cancelled) {
+          setLandmarker(lm);
+          pushLog(`MediaPipe loaded (delegate ready)`);
+        }
       } catch (err) {
         console.error("Failed to load FaceLandmarker:", err);
         if (!cancelled) setLandmarkerError("Face model failed to load.");
@@ -167,6 +178,28 @@ export function FaceScanner({
       streamRef.current = media;
       setStream(media);
       setCameraError(null);
+      pushLog(`Camera started`);
+
+      // Check actual camera resolution and warn if below 720p
+      const videoTrack = media.getVideoTracks()[0];
+      if (videoTrack) {
+        const settings = videoTrack.getSettings();
+        const w = settings.width ?? 0;
+        const h = settings.height ?? 0;
+        const minDim = Math.min(w, h);
+        const maxDim = Math.max(w, h);
+        if (maxDim < 1280 || minDim < 720) {
+          if (maxDim < 640 || minDim < 480) {
+            setCameraWarning(
+              `Very low camera quality detected (${w}×${h}). Results may be inaccurate. Try using a device with a better camera.`
+            );
+          } else {
+            setCameraWarning(
+              `Camera resolution is ${w}×${h}. For best results, use a device with at least 720p resolution.`
+            );
+          }
+        }
+      }
     } catch (err) {
       const name = (err as { name?: string }).name;
       if (name === "NotAllowedError" || name === "PermissionDeniedError") {
@@ -307,6 +340,57 @@ export function FaceScanner({
         qualityMessage = "improve_lighting";
       } else if (sharpness !== undefined && sharpness < 0.02) {
         qualityMessage = "hold_steady";
+      } else {
+        // Glasses / obstruction detection via face blendshapes.
+        // When glasses are present, eyeSquint values are elevated while
+        // eyeBlink values stay low (lenses prevent the eyelid from closing
+        // naturally). We also check for specular glare hotspots in the
+        // eye-bridge region of the frame.
+        const blendshapes = result.faceBlendshapes?.[0]?.categories;
+        if (blendshapes) {
+          const get = (name: string) =>
+            blendshapes.find((b: { categoryName: string }) => b.categoryName === name)?.score ?? 0;
+
+          const squintL = get("eyeSquintLeft");
+          const squintR = get("eyeSquintRight");
+          const blinkL = get("eyeBlinkLeft");
+          const blinkR = get("eyeBlinkRight");
+
+          // Glasses cause persistent squinting with low blink — natural squinting
+          // also raises the blink score, so the gap is diagnostic.
+          const avgSquint = (squintL + squintR) / 2;
+          const avgBlink = (blinkL + blinkR) / 2;
+          const glassesLikely = avgSquint > 0.35 && avgBlink < 0.15;
+
+          // Eye-bridge glare check: sample the nose-bridge region for
+          // specular highlights that indicate reflective surfaces (glasses).
+          let glareDetected = false;
+          if (ctx && lm0.length > 168) {
+            // MediaPipe landmark 6 = nose bridge between eyes
+            const bridge = lm0[6];
+            const sampleX = Math.round(bridge.x * targetW);
+            const sampleY = Math.round(bridge.y * targetH);
+            const radius = 4;
+            const sx = Math.max(0, sampleX - radius);
+            const sy = Math.max(0, sampleY - radius);
+            const sw = Math.min(radius * 2, targetW - sx);
+            const sh = Math.min(radius * 2, targetH - sy);
+            if (sw > 0 && sh > 0) {
+              const patch = ctx.getImageData(sx, sy, sw, sh);
+              let hotPixels = 0;
+              for (let i = 0; i < patch.data.length; i += 4) {
+                const maxC = Math.max(patch.data[i], patch.data[i + 1], patch.data[i + 2]);
+                if (maxC > 240) hotPixels++;
+              }
+              const hotRatio = hotPixels / (patch.data.length / 4);
+              if (hotRatio > 0.35) glareDetected = true;
+            }
+          }
+
+          if (glassesLikely || glareDetected) {
+            qualityMessage = "obstruction_detected";
+          }
+        }
       }
     }
 
@@ -435,6 +519,7 @@ export function FaceScanner({
     setPhase("uploading");
     setUploadIndex(0);
     setUploadFailed(false);
+    pushLog(`Upload started for session ${sid}`);
 
     try {
       // Still encoding runs off the inference loop; let it settle.
@@ -477,7 +562,8 @@ export function FaceScanner({
         })),
       });
 
-      if (!urlsRes.success) throw new Error(urlsRes.error.message);
+      if (!urlsRes.success) throw new Error(`uploadUrls failed: ${urlsRes.error.message}`);
+      pushLog(`Got presigned URLs`);
 
       setUploadIndex(2);
 
@@ -491,7 +577,9 @@ export function FaceScanner({
         };
       });
 
+      pushLog(`Uploading ${bundle.length} captures to S3...`);
       await uploadCaptures(bundle);
+      pushLog(`S3 uploads complete`);
 
       setUploadIndex(3);
       dispatch({ type: "ANALYZE_START" });
@@ -540,7 +628,8 @@ export function FaceScanner({
         },
       });
 
-      if (!completeRes.success) throw new Error(completeRes.error.message);
+      if (!completeRes.success) throw new Error(`complete failed: ${completeRes.error.message}`);
+      pushLog(`Analysis complete`);
 
       setUploadIndex(4);
       dispatch({ type: "COMPLETE" });
@@ -550,10 +639,12 @@ export function FaceScanner({
         onResult?.({ ageRange: completeRes.data.ageRange, sessionId: sid });
       }
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       console.error(err);
+      pushLog(`UPLOAD ERROR: ${errMsg}`);
       setUploadFailed(true);
       setPhase("error");
-      setCameraError("The scan could not be uploaded. Please try again.");
+      setCameraError(`Upload failed: ${errMsg}`);
     }
   }, [onResult]);
 
@@ -706,6 +797,15 @@ export function FaceScanner({
               </Button>
             )}
           </div>
+          {/* Debug log on error screen */}
+          {debugLog.length > 0 && (
+            <div className="mt-6 max-h-48 w-full max-w-sm overflow-y-auto rounded-lg border border-white/10 bg-black/60 p-3 text-left">
+              <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-cyan-400/60">Debug Log</p>
+              {debugLog.map((line, i) => (
+                <p key={i} className="font-mono text-[10px] leading-relaxed text-white/50">{line}</p>
+              ))}
+            </div>
+          )}
         </div>
       </ScanShell>
     );
@@ -798,6 +898,24 @@ export function FaceScanner({
           <p className="mt-3 text-center text-sm text-rose-400">{landmarkerError}</p>
         )}
       </footer>
+
+      {/* Low camera quality warning banner */}
+      {cameraWarning && (
+        <div className="absolute inset-x-0 top-[max(3.5rem,env(safe-area-inset-top,3.5rem))] z-30 mx-4 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="relative flex items-start gap-2.5 rounded-xl border border-amber-400/30 bg-amber-950/80 px-4 py-3 backdrop-blur-md">
+            <span className="mt-0.5 text-lg">⚠️</span>
+            <p className="flex-1 text-sm leading-snug text-amber-200">{cameraWarning}</p>
+            <button
+              type="button"
+              onClick={() => setCameraWarning(null)}
+              className="shrink-0 rounded-full p-1 text-amber-300/70 transition hover:bg-amber-300/20 hover:text-amber-200"
+              aria-label="Dismiss camera warning"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
     </ScanShell>
   );
 }

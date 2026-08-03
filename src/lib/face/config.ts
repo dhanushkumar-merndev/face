@@ -58,6 +58,7 @@ export type QualityMessage =
   | "improve_lighting"
   | "hold_steady"
   | "keep_face_visible"
+  | "obstruction_detected"
   | "ok";
 
 export const QUALITY_MESSAGE_TEXT: Record<QualityMessage, string> = {
@@ -69,6 +70,7 @@ export const QUALITY_MESSAGE_TEXT: Record<QualityMessage, string> = {
   improve_lighting: "Improve the lighting",
   hold_steady: "Hold the phone steady",
   keep_face_visible: "Keep your full face visible",
+  obstruction_detected: "Remove glasses or obstructions",
   ok: "Face detected",
 };
 
