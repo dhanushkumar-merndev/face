@@ -8,8 +8,13 @@
 
 const GROQ_BASE_URL = process.env.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1";
 
-/** Vision-capable Groq model used for the skin read-out. */
-export const DEFAULT_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+/** Default model cascade sequence: Primary -> Fallback 1 -> Fallback 2 */
+export const DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.6-27b";
+export const FALLBACK_GROQ_MODELS = [
+  "qwen/qwen3.6-27b",
+  "llama-3.3-70b-versatile",
+  "openai/gpt-oss-120",
+];
 
 export function getGroqModel(): string {
   return process.env.GROQ_MODEL || DEFAULT_GROQ_VISION_MODEL;
@@ -70,49 +75,61 @@ export async function groqChatCompletion(
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new GroqError("GROQ_API_KEY is not configured.");
 
-  const model = options.model ?? getGroqModel();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 20_000);
+  const modelsToTry = options.model
+    ? [options.model]
+    : [
+        process.env.GROQ_MODEL || DEFAULT_GROQ_VISION_MODEL,
+        "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120",
+      ];
 
-  try {
-    const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages: options.messages,
-        temperature: options.temperature ?? 0.2,
-        max_completion_tokens: options.maxTokens ?? 900,
-        ...(options.jsonMode ? { response_format: { type: "json_object" } } : {}),
-      }),
-      signal: controller.signal,
-    });
+  let lastError: Error | null = null;
 
-    let body: GroqResponseBody;
+  for (const model of modelsToTry) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 20_000);
+
     try {
-      body = (await res.json()) as GroqResponseBody;
-    } catch {
-      throw new GroqError(`Groq returned a non-JSON response (${res.status}).`, res.status);
-    }
+      const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages: options.messages,
+          temperature: options.temperature ?? 0.2,
+          max_completion_tokens: options.maxTokens ?? 900,
+          ...(options.jsonMode ? { response_format: { type: "json_object" } } : {}),
+        }),
+        signal: controller.signal,
+      });
 
-    if (!res.ok) {
-      throw new GroqError(body.error?.message ?? `Groq request failed (${res.status}).`, res.status);
-    }
+      let body: GroqResponseBody;
+      try {
+        body = (await res.json()) as GroqResponseBody;
+      } catch {
+        throw new GroqError(`Groq returned a non-JSON response (${res.status}).`, res.status);
+      }
 
-    const content = body.choices?.[0]?.message?.content;
-    if (!content) throw new GroqError("Groq returned an empty completion.");
+      if (!res.ok) {
+        throw new GroqError(body.error?.message ?? `Groq request failed (${res.status}).`, res.status);
+      }
 
-    return { content, model: body.model ?? model };
-  } catch (err) {
-    if (err instanceof GroqError) throw err;
-    if ((err as Error).name === "AbortError") {
-      throw new GroqError("Groq request timed out.");
+      const content = body.choices?.[0]?.message?.content;
+      if (!content) throw new GroqError("Groq returned an empty completion.");
+
+      return { content, model: body.model ?? model };
+    } catch (err) {
+      console.warn(`Model "${model}" failed, attempting fallback model...`, (err as Error).message);
+      lastError = err as Error;
+    } finally {
+      clearTimeout(timeout);
     }
-    throw new GroqError((err as Error).message);
-  } finally {
-    clearTimeout(timeout);
   }
+
+  throw lastError instanceof GroqError
+    ? lastError
+    : new GroqError(lastError?.message || "All models in fallback cascade failed.");
 }

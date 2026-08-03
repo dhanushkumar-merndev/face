@@ -16,7 +16,7 @@ export const SCAN_CONFIG = {
   rightYawMin: 20,
   faceAreaMinRatio: 0.12,
   faceAreaMaxRatio: 0.58,
-  maxCenterOffsetRatio: 0.18,
+  maxCenterOffsetRatio: 0.25,
   lostFaceGraceMs: 400,
   /** Pause after a direction is captured, before the next one is shown. */
   stepTransitionMs: 900,

@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "copy:mediapipe": "node scripts/copy-mediapipe-assets.mjs",
+    "upload:wasm": "node scripts/upload-wasm-to-tigris.mjs",
     "seed:admin": "node scripts/seed-admin.mjs"
   },
   "dependencies": {

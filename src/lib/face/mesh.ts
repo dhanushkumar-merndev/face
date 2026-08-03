@@ -145,21 +145,21 @@ export const MESH_TONE_COLORS: Record<
   { mesh: string; contour: string; beam: string; accent: string }
 > = {
   scanning: {
-    mesh: "rgba(125, 211, 252, 0.22)",
-    contour: "rgba(186, 230, 253, 0.75)",
+    mesh: "rgba(56, 189, 248, 0.25)",
+    contour: "rgba(186, 230, 253, 0.85)",
     beam: "rgba(56, 189, 248, 1)",
     accent: "#38bdf8",
   },
   ready: {
-    mesh: "rgba(134, 239, 172, 0.24)",
-    contour: "rgba(187, 247, 208, 0.8)",
+    mesh: "rgba(52, 211, 153, 0.3)",
+    contour: "rgba(187, 247, 208, 0.9)",
     beam: "rgba(52, 211, 153, 1)",
     accent: "#34d399",
   },
   warning: {
-    mesh: "rgba(253, 186, 116, 0.2)",
-    contour: "rgba(254, 215, 170, 0.7)",
-    beam: "rgba(251, 146, 60, 1)",
-    accent: "#fb923c",
+    mesh: "rgba(56, 189, 248, 0.25)",
+    contour: "rgba(125, 211, 252, 0.85)",
+    beam: "rgba(56, 189, 248, 1)",
+    accent: "#38bdf8",
   },
 };

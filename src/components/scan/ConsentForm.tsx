@@ -9,30 +9,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-const consentSchema = z
-  .object({
-    subjectName: z.string().optional(),
-    subjectEmail: z.string().email("Enter a valid email").optional().or(z.literal("")),
-    subjectPhone: z.string().optional(),
-    consentGiven: z.boolean().refine((v) => v, {
-      message: "You must consent to the recording and age-range analysis.",
-    }),
-    adultDeclaration: z.boolean().refine((v) => v, {
-      message: "You must confirm you are 18 or older.",
-    }),
-    acknowledgeApproximate: z.boolean().refine((v) => v, {
-      message: "You must acknowledge that results are approximate.",
-    }),
-  })
-  .superRefine((data, ctx) => {
-    if (data.subjectEmail && data.subjectEmail.length > 0 && !z.string().email().safeParse(data.subjectEmail).success) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["subjectEmail"],
-        message: "Enter a valid email",
-      });
-    }
-  });
+const consentSchema = z.object({
+  subjectName: z.string().min(1, "Name is required"),
+  subjectEmail: z.string().min(1, "Email is required").email("Enter a valid email address"),
+  subjectPhone: z.string().min(1, "Phone number is required"),
+  consentGiven: z.boolean().refine((v) => v, {
+    message: "You must consent to the recording and age-range analysis.",
+  }),
+  adultDeclaration: z.boolean().refine((v) => v, {
+    message: "You must confirm you are 18 or older.",
+  }),
+  acknowledgeApproximate: z.boolean().refine((v) => v, {
+    message: "You must acknowledge that results are approximate.",
+  }),
+});
 
 export type ConsentValues = z.infer<typeof consentSchema>;
 
@@ -52,15 +42,15 @@ export function ConsentForm({
   } = useForm<ConsentValues>({
     resolver: zodResolver(consentSchema),
     defaultValues: {
+      subjectName: "",
+      subjectEmail: "",
+      subjectPhone: "",
       consentGiven: false,
       adultDeclaration: false,
       acknowledgeApproximate: false,
     },
   });
 
-  // react-hooks/incompatible-library: RHF's watch() is the documented pattern
-  // for reading form values; the compiler warning is a known false positive.
-  // eslint-disable-next-line react-hooks/incompatible-library
   const watched = watch();
 
   const toggle = (name: keyof ConsentValues) => (checked: boolean) => {
@@ -86,19 +76,25 @@ export function ConsentForm({
           className="flex flex-col gap-4"
         >
           <div className="flex flex-col gap-1">
-            <Label htmlFor="subjectName">Name (optional)</Label>
+            <Label htmlFor="subjectName">Name *</Label>
             <Input id="subjectName" placeholder="Your name" {...register("subjectName")} />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="subjectEmail">Email (optional)</Label>
-            <Input id="subjectEmail" type="email" placeholder="you@example.com" {...register("subjectEmail")} />
-            {errors.subjectEmail && (
-              <p className="text-sm text-red-600">{errors.subjectEmail.message}</p>
+            {errors.subjectName && (
+              <p className="text-sm text-rose-400">{errors.subjectName.message}</p>
             )}
           </div>
           <div className="flex flex-col gap-1">
-            <Label htmlFor="subjectPhone">Phone (optional)</Label>
+            <Label htmlFor="subjectEmail">Email *</Label>
+            <Input id="subjectEmail" type="email" placeholder="you@example.com" {...register("subjectEmail")} />
+            {errors.subjectEmail && (
+              <p className="text-sm text-rose-400">{errors.subjectEmail.message}</p>
+            )}
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="subjectPhone">Phone *</Label>
             <Input id="subjectPhone" type="tel" placeholder="+91…" {...register("subjectPhone")} />
+            {errors.subjectPhone && (
+              <p className="text-sm text-rose-400">{errors.subjectPhone.message}</p>
+            )}
           </div>
 
           <div className="flex items-start gap-2">
@@ -112,7 +108,7 @@ export function ConsentForm({
               range and a cosmetic skin-age reading.
             </Label>
           </div>
-          {errors.consentGiven && <p className="text-sm text-red-600">{errors.consentGiven.message}</p>}
+          {errors.consentGiven && <p className="text-sm text-rose-400">{errors.consentGiven.message}</p>}
 
           <div className="flex items-start gap-2">
             <Checkbox
@@ -125,7 +121,7 @@ export function ConsentForm({
             </Label>
           </div>
           {errors.adultDeclaration && (
-            <p className="text-sm text-red-600">{errors.adultDeclaration.message}</p>
+            <p className="text-sm text-rose-400">{errors.adultDeclaration.message}</p>
           )}
 
           <div className="flex items-start gap-2">
@@ -140,7 +136,7 @@ export function ConsentForm({
             </Label>
           </div>
           {errors.acknowledgeApproximate && (
-            <p className="text-sm text-red-600">{errors.acknowledgeApproximate.message}</p>
+            <p className="text-sm text-rose-400">{errors.acknowledgeApproximate.message}</p>
           )}
 
           <Button type="submit" disabled={busy} className="mt-2 h-12 rounded-full font-bold">

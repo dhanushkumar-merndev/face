@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
   // domain you use during development.
   allowedDevOrigins: [
     "192.168.1.2",
-    "upper-electable-chase.ngrok-free.dev",
+    "upper-electable-chase.ngrok-free.dev","lien-fernlike-emanuel.ngrok-free.dev"
   ],
 };
 

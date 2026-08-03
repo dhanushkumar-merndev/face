@@ -103,24 +103,45 @@ export function FaceScanner({
     let cancelled = false;
     (async () => {
       try {
+        const wasmBaseUrl = process.env.NEXT_PUBLIC_WASM_BASE_URL || "/mediapipe/wasm";
+        const modelPath = process.env.NEXT_PUBLIC_MODEL_PATH || "/models/face_landmarker.task";
+
         const vision = await import("@mediapipe/tasks-vision");
-        const fileset = await vision.FilesetResolver.forVisionTasks("/mediapipe/wasm");
-        const lm = await vision.FaceLandmarker.createFromOptions(fileset, {
-          baseOptions: {
-            modelAssetPath: "/models/face_landmarker.task",
-            delegate: "GPU",
-          },
-          runningMode: "VIDEO",
-          numFaces: 2,
-          outputFaceBlendshapes: true,
-          outputFacialTransformationMatrixes: true,
-          minFaceDetectionConfidence: 0.7,
-          minFacePresenceConfidence: 0.7,
-          minTrackingConfidence: 0.7,
-        });
+        const fileset = await vision.FilesetResolver.forVisionTasks(wasmBaseUrl);
+        let lm: FaceLandmarker;
+        try {
+          lm = await vision.FaceLandmarker.createFromOptions(fileset, {
+            baseOptions: {
+              modelAssetPath: modelPath,
+              delegate: "GPU",
+            },
+            runningMode: "VIDEO",
+            numFaces: 2,
+            outputFaceBlendshapes: true,
+            outputFacialTransformationMatrixes: true,
+            minFaceDetectionConfidence: 0.5,
+            minFacePresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+          });
+        } catch (gpuErr) {
+          console.warn("MediaPipe GPU delegate failed, trying CPU fallback:", gpuErr);
+          lm = await vision.FaceLandmarker.createFromOptions(fileset, {
+            baseOptions: {
+              modelAssetPath: modelPath,
+              delegate: "CPU",
+            },
+            runningMode: "VIDEO",
+            numFaces: 2,
+            outputFaceBlendshapes: true,
+            outputFacialTransformationMatrixes: true,
+            minFaceDetectionConfidence: 0.5,
+            minFacePresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+          });
+        }
         if (!cancelled) setLandmarker(lm);
       } catch (err) {
-        console.error(err);
+        console.error("Failed to load FaceLandmarker:", err);
         if (!cancelled) setLandmarkerError("Face model failed to load.");
       }
     })();
@@ -202,7 +223,16 @@ export function FaceScanner({
     const lm = landmarker;
     if (!lm) return;
 
-    const result = lm.detectForVideo(video, performance.now());
+    let result;
+    try {
+      result = lm.detectForVideo(video, performance.now());
+    } catch {
+      // MediaPipe may throw on the very first frame or log INFO messages
+      // (e.g. "Created TensorFlow Lite XNNPACK delegate for CPU") that
+      // Next.js dev mode surfaces as errors. Safe to skip this frame.
+      return;
+    }
+
     const faces = result.faceLandmarks ?? [];
     const matrices = result.facialTransformationMatrixes ?? [];
 
@@ -550,7 +580,7 @@ export function FaceScanner({
     try {
       const rec = startSegmentRecorder(activeStream);
       activeRecorderRef.current = { step, rec };
-      setRecordingStep(step);
+      queueMicrotask(() => setRecordingStep(step));
 
       // Move the session into `recording` once, before any upload URL is asked for.
       const sid = mediaSessionIdRef.current;
@@ -576,7 +606,7 @@ export function FaceScanner({
     if (!state.steps.some((s) => s.step === active.step)) return;
 
     activeRecorderRef.current = null;
-    setRecordingStep(null);
+    queueMicrotask(() => setRecordingStep(null));
 
     void active.rec
       .stop()

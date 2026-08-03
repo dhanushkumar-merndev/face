@@ -13,25 +13,43 @@ export function CameraPreview({
   stream: MediaStream | null;
   onVideoReady?: (video: HTMLVideoElement) => void;
 }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [stream]);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
-    const onLoaded = () => onVideoReady?.(video);
-    video.addEventListener("loadedmetadata", onLoaded);
-    return () => video.removeEventListener("loadedmetadata", onLoaded);
-  }, [onVideoReady]);
+    if (!video || !stream) return;
+
+    video.srcObject = stream;
+    video.play().catch(() => {});
+
+    const notifyReady = () => {
+      if (video.readyState >= 1) {
+        onVideoReady?.(video);
+      }
+    };
+
+    notifyReady();
+
+    const onLoadedMetadata = () => notifyReady();
+    const onCanPlay = () => notifyReady();
+
+    video.addEventListener("loadedmetadata", onLoadedMetadata);
+    video.addEventListener("canplay", onCanPlay);
+
+    return () => {
+      video.removeEventListener("loadedmetadata", onLoadedMetadata);
+      video.removeEventListener("canplay", onCanPlay);
+    };
+  }, [stream, onVideoReady]);
 
   return (
     <video
-      ref={videoRef}
+      ref={(el) => {
+        videoRef.current = el;
+        if (el && el.readyState >= 1) {
+          onVideoReady?.(el);
+        }
+      }}
       className="h-full w-full -scale-x-100 object-cover"
       playsInline
       muted
@@ -39,3 +57,4 @@ export function CameraPreview({
     />
   );
 }
+
