@@ -8,7 +8,12 @@ import { fromZodError, ok, fail, internalError } from "@/lib/api/respond";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { resolveSessionFromRequest } from "@/lib/auth/session-guard";
 import { headObject } from "@/lib/aws/s3";
-import { analyzeAgeRange, AgeAnalysisValidationError } from "@/lib/aws/rekognition";
+import {
+  analyzeAgeRange,
+  isRekognitionConfigured,
+  AgeAnalysisValidationError,
+  type AgeAnalysis,
+} from "@/lib/aws/rekognition";
 import { analyzeSkin, SkinAnalysisError } from "@/lib/groq/skin-analysis";
 import { isGroqConfigured } from "@/lib/groq/client";
 import { logger } from "@/lib/logger";
@@ -148,41 +153,54 @@ export async function POST(
   }));
   await supabase.from("scan_steps").upsert(stepRows, { onConflict: "session_id,step" });
 
-  // 5. Rekognition DetectFaces on the frontal frame.
-  let ageResult;
-  try {
-    ageResult = await analyzeAgeRange(analysisCapture.frame.objectKey);
-  } catch (err) {
-    if (err instanceof AgeAnalysisValidationError) {
-      // Safe failure: keep media per retention, mark failed, allow admin retry.
-      await supabase
-        .from("scan_sessions")
-        .update({
+  // 5. Optional age band from Rekognition DetectFaces on the frontal frame.
+  //    The headline skin age comes from the vision pass in step 6, so a
+  //    deployment without AWS credentials skips this and the result page simply
+  //    omits the age-band pill. Note this is also the only server-side check
+  //    that the frame holds exactly one face — without it the pipeline trusts
+  //    the client's own face detection.
+  let ageResult: AgeAnalysis | null = null;
+  if (!isRekognitionConfigured()) {
+    logger.info("rekognition_skipped", { sessionId, reason: "not_configured" });
+  } else {
+    try {
+      ageResult = await analyzeAgeRange(analysisCapture.frame.objectKey);
+    } catch (err) {
+      if (err instanceof AgeAnalysisValidationError) {
+        // Rekognition is enabled and actively rejected the frame (no face, or
+        // more than one). Safe failure: keep media per retention, mark failed,
+        // allow admin retry.
+        await supabase
+          .from("scan_sessions")
+          .update({
+            status: "failed",
+            failure_code: err.code,
+            failure_message: "The age could not be estimated from the captured frame.",
+            custom_challenge_passed: true,
+            skin_status: "skipped",
+          })
+          .eq("id", sessionId);
+        await supabase.from("scan_audit_events").insert({
+          session_id: sessionId,
+          event_type: "analysis_failed",
+          event_data: { code: err.code },
+        });
+        logger.warn("analysis_failed", { sessionId, code: err.code });
+        return ok({
+          sessionId,
           status: "failed",
-          failure_code: err.code,
-          failure_message: "The age could not be estimated from the captured frame.",
-          custom_challenge_passed: true,
-          skin_status: "skipped",
-        })
-        .eq("id", sessionId);
-      await supabase.from("scan_audit_events").insert({
-        session_id: sessionId,
-        event_type: "analysis_failed",
-        event_data: { code: err.code },
-      });
-      logger.warn("analysis_failed", { sessionId, code: err.code });
-      return ok({
-        sessionId,
-        status: "failed",
-        ageRange: null,
-        skin: null,
-        completedAt: null,
-        failureCode: err.code,
-        failureMessage: "The age could not be estimated from the captured frame.",
-      });
+          ageRange: null,
+          skin: null,
+          completedAt: null,
+          failureCode: err.code,
+          failureMessage: "The age could not be estimated from the captured frame.",
+        });
+      }
+      // The provider itself is unreachable or misconfigured. Not the user's
+      // fault and not worth losing a good scan over — drop the age band and
+      // continue to the skin read-out.
+      logger.error("rekognition_error", { sessionId, error: (err as Error).message });
     }
-    logger.error("rekognition_error", { sessionId, error: (err as Error).message });
-    return internalError("Age analysis failed. Please try again later.");
   }
 
   // 6. Groq skin read-out. Optional and never fatal: a scan without a skin
@@ -191,27 +209,30 @@ export async function POST(
     sessionId,
     captures: input.captures.map((c) => ({ step: c.step, objectKey: c.frame.objectKey })),
     context: {
-      ageLow: ageResult.ageLow,
-      ageHigh: ageResult.ageHigh,
+      ageLow: ageResult?.ageLow,
+      ageHigh: ageResult?.ageHigh,
       brightness: input.qualitySummary.averageBrightness,
       sharpness: input.qualitySummary.bestSharpness,
     },
   });
 
-  // 7. Persist results.
+  // 7. Persist results. One timestamp for both the row and the response so the
+  //    value the client shows is the value that was stored.
+  const completedAt = new Date().toISOString();
   const { error: resultError } = await supabase
     .from("scan_sessions")
     .update({
       status: "completed",
-      age_low: ageResult.ageLow,
-      age_high: ageResult.ageHigh,
-      age_provider: ageResult.provider,
-      age_model_version: ageResult.modelVersion,
-      age_analyzed_at: new Date().toISOString(),
-      face_confidence: ageResult.faceConfidence,
-      face_count: 1,
-      rekognition_pose: ageResult.pose as unknown as Record<string, unknown>,
-      rekognition_quality: ageResult.quality as unknown as Record<string, unknown>,
+      completed_at: completedAt,
+      age_low: ageResult?.ageLow ?? null,
+      age_high: ageResult?.ageHigh ?? null,
+      age_provider: ageResult?.provider ?? null,
+      age_model_version: ageResult?.modelVersion ?? null,
+      age_analyzed_at: ageResult ? new Date().toISOString() : null,
+      face_confidence: ageResult?.faceConfidence ?? null,
+      face_count: ageResult ? 1 : null,
+      rekognition_pose: (ageResult?.pose ?? null) as unknown as Record<string, unknown> | null,
+      rekognition_quality: (ageResult?.quality ?? null) as unknown as Record<string, unknown> | null,
       quality_summary: input.qualitySummary as unknown as Record<string, unknown>,
       custom_challenge_passed: true,
       failure_code: null,
@@ -235,25 +256,25 @@ export async function POST(
     session_id: sessionId,
     event_type: "scan_completed",
     event_data: {
-      ageLow: ageResult.ageLow,
-      ageHigh: ageResult.ageHigh,
+      ageLow: ageResult?.ageLow ?? null,
+      ageHigh: ageResult?.ageHigh ?? null,
       skinStatus: skin.status,
     },
   });
 
   logger.info("scan_completed", {
     sessionId,
-    ageLow: ageResult.ageLow,
-    ageHigh: ageResult.ageHigh,
+    ageLow: ageResult?.ageLow ?? null,
+    ageHigh: ageResult?.ageHigh ?? null,
     skinStatus: skin.status,
   });
 
   return ok({
     sessionId,
     status: "completed",
-    ageRange: { low: ageResult.ageLow, high: ageResult.ageHigh },
+    ageRange: ageResult ? { low: ageResult.ageLow, high: ageResult.ageHigh } : null,
     skin: skin.result,
-    completedAt: new Date().toISOString(),
+    completedAt,
   });
 }
 
@@ -266,7 +287,9 @@ type SkinOutcome = {
 async function runSkinAnalysis(args: {
   sessionId: string;
   captures: Array<{ step: string; objectKey: string }>;
-  context: { ageLow: number; ageHigh: number; brightness: number; sharpness: number };
+  // The age band is absent when Rekognition is not configured; the vision pass
+  // treats it as optional background context anyway.
+  context: { ageLow?: number; ageHigh?: number; brightness: number; sharpness: number };
 }): Promise<SkinOutcome> {
   if (!isGroqConfigured()) {
     return { status: "skipped", result: null };
@@ -276,7 +299,11 @@ async function runSkinAnalysis(args: {
     return { status: "completed", result };
   } catch (err) {
     const code = err instanceof SkinAnalysisError ? err.code : "unknown";
-    logger.warn("skin_analysis_failed", { sessionId: args.sessionId, code });
+    logger.warn("skin_analysis_failed", {
+      sessionId: args.sessionId,
+      code,
+      error: (err as Error).message,
+    });
     return { status: "failed", result: null };
   }
 }

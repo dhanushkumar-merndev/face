@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
-import { ok, fail } from "@/lib/api/respond";
+import { ok, fail, internalError } from "@/lib/api/respond";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { resolveSessionFromRequest } from "@/lib/auth/session-guard";
+import { logger } from "@/lib/logger";
 
 export async function GET(
   req: NextRequest,
@@ -23,7 +24,14 @@ export async function GET(
     .eq("id", sessionId)
     .single();
 
-  if (error || !data) {
+  // PGRST116 is "no rows returned" — the only genuine not-found. Any other
+  // error is a server-side fault (a bad column name, a broken policy) and must
+  // not be reported to the user as a missing scan.
+  if (error && error.code !== "PGRST116") {
+    logger.error("status_query_failed", { sessionId, code: error.code, error: error.message });
+    return internalError("Could not load this scan.");
+  }
+  if (!data) {
     return fail("not_found", "Scan session not found.", 404);
   }
 

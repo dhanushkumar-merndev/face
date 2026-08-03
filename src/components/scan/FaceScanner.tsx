@@ -20,6 +20,7 @@ import type { MeshTone } from "@/lib/face/mesh";
 import { startSegmentRecorder, type SegmentRecorder, type RecordingSession } from "@/lib/scan/media-recorder";
 import { loadImageFromVideo, cropFaceCanvas, canvasToJpeg } from "@/lib/scan/best-frame";
 import { scanApi } from "@/lib/scan/api";
+import { clearActiveSession } from "@/lib/storage/scan-storage";
 import { uploadCaptures, type CaptureUpload } from "@/lib/scan/upload";
 import { CameraPreview } from "./CameraPreview";
 import { FaceMeshOverlay, type MeshFrame } from "./FaceMeshOverlay";
@@ -82,6 +83,15 @@ export function FaceScanner({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const meshFrameRef = useRef<MeshFrame | null>(null);
+
+  // Readiness has to be state, not just the ref: the inference loop cannot
+  // start until the video element exists, and a ref assignment does not
+  // re-render, so the loop would never learn that it arrived.
+  const [videoReady, setVideoReady] = useState(false);
+  const handleVideoReady = useCallback((video: HTMLVideoElement) => {
+    videoRef.current = video;
+    setVideoReady(true);
+  }, []);
 
   // Per-direction capture buffers.
   const segmentsRef = useRef<Partial<Record<ChallengeStep, RecordingSession>>>({});
@@ -261,9 +271,14 @@ export function FaceScanner({
     try {
       result = lm.detectForVideo(video, performance.now());
     } catch {
-      // MediaPipe may throw on the very first frame or log INFO messages
-      // (e.g. "Created TensorFlow Lite XNNPACK delegate for CPU") that
-      // Next.js dev mode surfaces as errors. Safe to skip this frame.
+      // MediaPipe can throw on the very first frame, before the graph has warmed
+      // up. Safe to skip this frame.
+      //
+      // This does not catch the "Created TensorFlow Lite XNNPACK delegate for
+      // CPU" line the dev overlay reports here — that is the WASM module
+      // flushing stderr through console.error, not a thrown exception, so it
+      // never reaches this handler. It is an INFO message and is expected:
+      // MediaPipe always runs the blendshapes graph on CPU.
       return;
     }
 
@@ -316,19 +331,33 @@ export function FaceScanner({
         landmarks: lm0.map((p) => ({ x: p.x, y: p.y })),
       };
 
-      const targetW = 160;
-      const targetH = Math.round((frameHeight / frameWidth) * targetW);
-      if (!analysisCanvasRef.current) {
-        analysisCanvasRef.current = document.createElement("canvas");
-      }
-      const analysis = analysisCanvasRef.current;
-      if (analysis.width !== targetW) analysis.width = targetW;
-      if (analysis.height !== targetH) analysis.height = targetH;
-      const ctx = analysis.getContext("2d", { willReadFrequently: true });
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, targetW, targetH);
-        luminance = computeLuminance(ctx, targetW, targetH);
-        sharpness = computeSharpness(ctx, targetW, targetH);
+      // Exposure and blur are sampled from the face region only. Measuring the
+      // whole frame made desktop webcams unusable: a window or lamp behind the
+      // subject dominates the average and pins the scan on "improve lighting",
+      // and squashing a wide 16:9 frame down to 160px wipes out the edge detail
+      // the sharpness score depends on, pinning it on "hold steady". A phone
+      // held at arm's length hides both because the face fills the frame.
+      const cropMargin = 0.15;
+      const cropX = Math.max(0, box.x - box.width * cropMargin);
+      const cropY = Math.max(0, box.y - box.height * cropMargin);
+      const cropW = Math.min(frameWidth - cropX, box.width * (1 + cropMargin * 2));
+      const cropH = Math.min(frameHeight - cropY, box.height * (1 + cropMargin * 2));
+
+      if (cropW >= 16 && cropH >= 16) {
+        const targetW = 160;
+        const targetH = Math.max(1, Math.round((cropH / cropW) * targetW));
+        if (!analysisCanvasRef.current) {
+          analysisCanvasRef.current = document.createElement("canvas");
+        }
+        const analysis = analysisCanvasRef.current;
+        if (analysis.width !== targetW) analysis.width = targetW;
+        if (analysis.height !== targetH) analysis.height = targetH;
+        const ctx = analysis.getContext("2d", { willReadFrequently: true });
+        if (ctx) {
+          ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, targetW, targetH);
+          luminance = computeLuminance(ctx, targetW, targetH);
+          sharpness = computeSharpness(ctx, targetW, targetH);
+        }
       }
 
       const area = frameWidth * frameHeight;
@@ -427,7 +456,7 @@ export function FaceScanner({
   // -------------------------------------------------------------------------
   useEffect(() => {
     if (phase !== "preparing" && phase !== "active") return;
-    if (!landmarker || !videoRef.current) return;
+    if (!landmarker || !videoReady || !videoRef.current) return;
 
     let running = true;
 
@@ -446,9 +475,24 @@ export function FaceScanner({
       running = false;
       cancelAnimationFrame(rafRef.current);
     };
-  }, [phase, landmarker, runInference]);
+  }, [phase, landmarker, videoReady, runInference]);
 
   const countdownStartedRef = useRef(false);
+
+  // The `active` watchdog does not cover `preparing`, so a quality check that
+  // never clears (soft webcam, harsh backlight) would otherwise leave the user
+  // on "Calibrating scanner" indefinitely. Offer a manual start instead.
+  const [stalled, setStalled] = useState(false);
+  useEffect(() => {
+    if (phase !== "preparing" || !stream || !landmarker || faceCentered) return;
+    const id = setTimeout(() => setStalled(true), 12_000);
+    return () => clearTimeout(id);
+  }, [phase, stream, landmarker, faceCentered]);
+
+  const startAnyway = useCallback(() => {
+    pushLog("Manual start (quality gate bypassed)");
+    setFaceCentered(true);
+  }, [pushLog]);
 
   // -------------------------------------------------------------------------
   // Countdown when camera + model ready and face is centered.
@@ -755,7 +799,14 @@ export function FaceScanner({
           <p className="max-w-sm text-lg text-white/90">{cameraError ?? "Something went wrong."}</p>
           <div className="flex flex-col gap-3 sm:flex-row">
             <Button
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                // A session that failed mid-flight has already moved past
+                // `recording`, so it can never accept uploads again. Drop it and
+                // let the consent gate mint a fresh one, rather than reloading
+                // into the same dead id and 409-ing forever.
+                clearActiveSession();
+                window.location.reload();
+              }}
               className="h-12 rounded-full bg-cyan-400 px-8 font-semibold text-slate-950 hover:bg-cyan-300"
             >
               Try again
@@ -800,12 +851,7 @@ export function FaceScanner({
     <ScanShell>
       {/* Live camera + face structure */}
       <div className="absolute inset-0">
-        <CameraPreview
-          stream={stream}
-          onVideoReady={(video) => {
-            videoRef.current = video;
-          }}
-        />
+        <CameraPreview stream={stream} onVideoReady={handleVideoReady} />
         <div className="pointer-events-none absolute inset-0">
           <FaceMeshOverlay source={meshFrameRef} tone={tone} />
         </div>
@@ -860,6 +906,16 @@ export function FaceScanner({
 
       {/* Bottom instruction panel */}
       <footer className="relative z-10 mt-auto px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+        {phase === "preparing" && stalled && countdown === null && (
+          <div className="mb-3 flex justify-center">
+            <Button
+              onClick={startAnyway}
+              className="h-11 rounded-full bg-cyan-400 px-6 text-sm font-semibold text-slate-950 hover:bg-cyan-300"
+            >
+              Start scan anyway
+            </Button>
+          </div>
+        )}
         <DirectionInstruction
           step={state.currentStep}
           qualityMessage={qualityMessage ?? undefined}

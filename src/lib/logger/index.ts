@@ -1,7 +1,12 @@
 const REDACT_KEYS = ["authorization", "cookie", "x-supabase-api-key", "apikey"];
 
+/**
+ * Recurses so nested objects get the same key-based treatment. Values are
+ * decided by their key, never by their type: masking every string here would
+ * swallow the event detail — error messages, ids, codes — that these logs
+ * exist to carry, and would make REDACT_KEYS meaningless.
+ */
 function redactValue(value: unknown): unknown {
-  if (typeof value === "string") return "[REDACTED]";
   if (Array.isArray(value)) return value.map(redactValue);
   if (value && typeof value === "object") {
     return redactObject(value as Record<string, unknown>);

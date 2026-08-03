@@ -12,13 +12,22 @@ alter table public.scan_assets
   add column if not exists step public.scan_step_name null;
 
 -- The old shape allowed one video + one frame per session. Replace it with a
--- uniqueness rule that is per (session, kind, step). Legacy rows have a null
--- step, which coalesces to '' and stays unique against the new per-step rows.
+-- uniqueness rule that is per (session, kind, step). `nulls not distinct` keeps
+-- legacy rows — which have a null step — colliding with each other rather than
+-- duplicating.
+--
+-- The key must be the bare column, not an expression: indexing coalesce(step::text,'')
+-- is rejected outright (42P17, the enum-to-text cast is only STABLE), and even
+-- if it were allowed, Postgres infers an ON CONFLICT target only from an index
+-- whose keys match the column list exactly. The complete endpoint upserts with
+-- on_conflict=session_id,kind,step and needs this index to match it.
+--
+-- Requires Postgres 15 or newer.
 alter table public.scan_assets
   drop constraint if exists scan_assets_session_id_kind_key;
 
 create unique index if not exists scan_assets_session_kind_step_uidx
-  on public.scan_assets (session_id, kind, coalesce(step::text, ''));
+  on public.scan_assets (session_id, kind, step) nulls not distinct;
 
 create index if not exists scan_assets_session_step_idx
   on public.scan_assets (session_id, step);

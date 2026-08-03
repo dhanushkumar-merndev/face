@@ -6,7 +6,7 @@ import confetti from "canvas-confetti";
 import { scanApi, type ScanStatusResult, type SkinAnalysisPayload } from "@/lib/scan/api";
 import { Button } from "@/components/ui/button";
 import { SkinScoreBars } from "@/components/scan/SkinScoreBars";
-import { Droplets, Sparkles, ShieldCheck, RotateCcw, Trash2, Loader2 } from "lucide-react";
+import { Droplets, Sparkles, ShieldCheck, RotateCcw, Loader2 } from "lucide-react";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -51,8 +51,6 @@ export default function ScanResultPage() {
   const [result, setResult] = useState<ScanStatusResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [deleted, setDeleted] = useState(false);
 
   const settledRef = useRef(false);
   const confettiFiredRef = useRef(false);
@@ -99,40 +97,6 @@ export default function ScanResultPage() {
       triggerConfetti();
     }
   }, [result?.status]);
-
-  const handleDelete = async () => {
-    if (!confirm("Delete this scan and all associated data? This cannot be undone.")) return;
-    setDeleting(true);
-    try {
-      const res = await scanApi.deleteScan(sessionId);
-      if (!res.success) {
-        setError(res.error.message);
-        setDeleting(false);
-        return;
-      }
-      setDeleted(true);
-    } catch (err) {
-      console.error(err);
-      setError("Deletion failed. Please try again.");
-      setDeleting(false);
-    }
-  };
-
-  if (deleted) {
-    return (
-      <ResultShell>
-        <div className="animate-hud-rise hud-panel rounded-3xl p-8 text-center">
-          <p className="text-2xl font-bold">Your data has been deleted</p>
-          <p className="mt-2 text-sm text-white/55">
-            The clips, frames and database record for this scan have been removed.
-          </p>
-          <Button onClick={() => router.push("/")} className="mt-6 h-12 rounded-full px-8 font-semibold">
-            Back to start
-          </Button>
-        </div>
-      </ResultShell>
-    );
-  }
 
   if (loading) {
     return (
@@ -196,14 +160,6 @@ export default function ScanResultPage() {
               className="h-12 rounded-full px-8 font-semibold"
             >
               <RotateCcw /> Scan again
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={handleDelete}
-              disabled={deleting}
-              className="h-12 rounded-full px-8 text-white/60 hover:bg-white/10 hover:text-white"
-            >
-              <Trash2 /> {deleting ? "Deleting…" : "Delete my data"}
             </Button>
           </div>
         </div>
@@ -360,14 +316,6 @@ export default function ScanResultPage() {
             className="h-12 rounded-full px-8 font-semibold"
           >
             <RotateCcw /> Scan again
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={handleDelete}
-            disabled={deleting}
-            className="h-12 rounded-full px-8 text-white/60 hover:bg-white/10 hover:text-white"
-          >
-            <Trash2 /> {deleting ? "Deleting…" : "Delete my data"}
           </Button>
         </div>
       </div>

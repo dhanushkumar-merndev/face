@@ -39,6 +39,22 @@ export function getFormState(): SavedScanForm {
   }
 }
 
+/**
+ * Snapshot + subscription pair for `useSyncExternalStore`. Returning a
+ * primitive keeps React's identity comparison stable across renders.
+ */
+export function getActiveSessionId(): string | null {
+  return getFormState().activeSessionId ?? null;
+}
+
+export function subscribeToFormState(onChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  // Only fires for writes from other tabs; same-tab writes are pushed through
+  // React state by the caller.
+  window.addEventListener("storage", onChange);
+  return () => window.removeEventListener("storage", onChange);
+}
+
 export function clearActiveSession(): void {
   if (typeof window === "undefined") return;
   try {

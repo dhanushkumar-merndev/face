@@ -44,8 +44,18 @@ export class SkinAnalysisError extends Error {
   }
 }
 
-/** Groq rejects oversized base64 payloads; keep well under the limit. */
-const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
+/**
+ * Only the frontal view is sent. Three base64 frames put the request at 8563
+ * tokens against a free-tier ceiling of 8000 TPM, so every attempt in the model
+ * cascade failed with "Request too large" and the scan lost its skin score
+ * entirely. The side profiles add little skin detail the CENTER view does not
+ * already carry, so dropping them is the cheapest way back under the limit.
+ *
+ * Raise MAX_FRAMES if the account moves to a higher tier.
+ */
+const MAX_FRAMES = 1;
+/** Per-frame ceiling; a frame larger than this is skipped, not truncated. */
+const MAX_IMAGE_BYTES = 900 * 1024;
 
 const SYSTEM_PROMPT = `You are the scoring engine for "Find Your Skin Age", a light-hearted skincare app.
 
@@ -109,15 +119,14 @@ export async function analyzeSkin(input: SkinAnalysisInput): Promise<SkinAnalysi
   );
 
   const images: Array<{ step: string; dataUrl: string }> = [];
-  let budget = MAX_IMAGE_BYTES;
   for (const frame of ordered) {
+    if (images.length >= MAX_FRAMES) break;
     try {
       const bytes = await getObjectBytes(frame.objectKey);
-      if (bytes.byteLength > budget) continue;
-      budget -= bytes.byteLength;
+      if (bytes.byteLength > MAX_IMAGE_BYTES) continue;
       images.push({ step: frame.step, dataUrl: toDataUrl(bytes) });
     } catch {
-      // A missing side frame is fine as long as one view survives.
+      // Try the next view; one usable frame is enough.
     }
   }
 
@@ -143,7 +152,6 @@ export async function analyzeSkin(input: SkinAnalysisInput): Promise<SkinAnalysi
   const completion = await groqChatCompletion({
     jsonMode: true,
     temperature: 0.3,
-    maxTokens: 900,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       {
@@ -158,10 +166,16 @@ export async function analyzeSkin(input: SkinAnalysisInput): Promise<SkinAnalysi
       },
     ],
   }).catch((err) => {
-    throw new SkinAnalysisError(
-      "provider_error",
-      err instanceof GroqError ? err.message : "The skin analysis provider failed."
-    );
+    if (err instanceof GroqError) {
+      // The raw generation is the only way to tell a truncated reply from a
+      // malformed one; without it the failure is invisible outside Groq's
+      // own dashboard.
+      const tail = err.failedGeneration
+        ? ` | model output: ${err.failedGeneration.slice(0, 300)}`
+        : "";
+      throw new SkinAnalysisError("provider_error", `${err.message}${tail}`);
+    }
+    throw new SkinAnalysisError("provider_error", "The skin analysis provider failed.");
   });
 
   let raw: unknown;

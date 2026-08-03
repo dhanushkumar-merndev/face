@@ -7,14 +7,62 @@ import { getBucket, getObjectBytes } from "@/lib/aws/s3";
 
 let rekognitionClient: RekognitionClient | null = null;
 
+/** Raised when Rekognition has no usable AWS credentials. */
+export class RekognitionConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RekognitionConfigError";
+  }
+}
+
+/**
+ * Rekognition is a real AWS service and needs real AWS IAM credentials.
+ *
+ * When storage is Tigris, AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY hold Tigris
+ * keys (tid_… / tsec_…). Those sign S3 requests to Tigris fine but Rekognition
+ * rejects them with "The security token included in the request is invalid", so
+ * the AWS_* pair is only inherited when storage is actually AWS. Set the
+ * REKOGNITION_* pair to override in either case.
+ */
+function getRekognitionCredentials(): { accessKeyId: string; secretAccessKey: string } {
+  const usingTigris = Boolean(process.env.TIGRIS_ENDPOINT);
+  const accessKeyId =
+    process.env.REKOGNITION_ACCESS_KEY_ID ||
+    (usingTigris ? "" : process.env.AWS_ACCESS_KEY_ID ?? "");
+  const secretAccessKey =
+    process.env.REKOGNITION_SECRET_ACCESS_KEY ||
+    (usingTigris ? "" : process.env.AWS_SECRET_ACCESS_KEY ?? "");
+
+  if (!accessKeyId || !secretAccessKey) {
+    throw new RekognitionConfigError(
+      usingTigris
+        ? "Rekognition needs AWS IAM credentials. TIGRIS_ENDPOINT is set, so AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY hold Tigris keys and cannot be used. Set REKOGNITION_ACCESS_KEY_ID, REKOGNITION_SECRET_ACCESS_KEY and REKOGNITION_REGION for an IAM user with rekognition:DetectFaces."
+        : "Rekognition needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (or the REKOGNITION_* pair) to be configured."
+    );
+  }
+  return { accessKeyId, secretAccessKey };
+}
+
+/**
+ * True when Rekognition has usable credentials. Age analysis is optional: the
+ * headline skin age comes from the vision pass, so a deployment with no AWS
+ * account simply skips the age band.
+ */
+export function isRekognitionConfigured(): boolean {
+  try {
+    getRekognitionCredentials();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function getRekognitionClient(): RekognitionClient {
   if (!rekognitionClient) {
     rekognitionClient = new RekognitionClient({
-      region: process.env.AWS_REGION ?? "ap-south-1",
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID ?? "",
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? "",
-      },
+      region:
+        process.env.REKOGNITION_REGION ?? process.env.AWS_REGION ?? "ap-south-1",
+      credentials: getRekognitionCredentials(),
     });
   }
   return rekognitionClient;

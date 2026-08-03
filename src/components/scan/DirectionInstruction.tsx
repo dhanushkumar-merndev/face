@@ -43,6 +43,20 @@ export function DirectionInstruction({
 
   return (
     <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-5 backdrop-blur-xl">
+      {/* Kept above the instruction: on short desktop viewports anything below
+          the hold meter is the first thing clipped, and this is the one line
+          that explains why the scan has not started. */}
+      {blocked && (
+        <p
+          className="mb-3 flex items-center gap-2 text-sm font-medium text-amber-300"
+          role="status"
+          aria-live="polite"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {QUALITY_MESSAGE_TEXT[qualityMessage]}
+        </p>
+      )}
+
       <div className="flex items-center gap-4">
         <span
           aria-hidden="true"
@@ -91,17 +105,6 @@ export function DirectionInstruction({
             aria-label="Hold progress"
           />
         </div>
-      )}
-
-      {blocked && (
-        <p
-          className="mt-3 flex items-center gap-2 text-sm font-medium text-amber-300"
-          role="status"
-          aria-live="polite"
-        >
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          {QUALITY_MESSAGE_TEXT[qualityMessage]}
-        </p>
       )}
     </div>
   );

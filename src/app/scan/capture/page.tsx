@@ -1,29 +1,43 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { ConsentForm, type ConsentValues } from "@/components/scan/ConsentForm";
 import { FaceScanner } from "@/components/scan/FaceScanner";
 import { scanApi } from "@/lib/scan/api";
-import { saveFormState, getFormState, clearActiveSession } from "@/lib/storage/scan-storage";
+import {
+  saveFormState,
+  clearActiveSession,
+  getActiveSessionId,
+  subscribeToFormState,
+} from "@/lib/storage/scan-storage";
 
 /**
  * Consent gate -> camera permission -> full-screen guided capture.
- * Automatically restores active scan session on hard refresh using state initializer.
+ * An interrupted scan is restored from client storage on a hard refresh.
  */
 export default function ScanCapturePage() {
   const router = useRouter();
 
-  // Lazy state initializers read from client storage directly during initial render,
-  // avoiding synchronous setState calls inside useEffect.
-  const [sessionId, setSessionId] = useState<string | null>(() => {
-    return getFormState().activeSessionId ?? null;
-  });
-  const [consented, setConsented] = useState<boolean>(() => {
-    return Boolean(getFormState().activeSessionId);
-  });
+  // Storage exists only on the client, so the server snapshot is always null:
+  // both the server HTML and the client's hydration pass render the consent
+  // form, and React swaps in the restored session immediately afterwards.
+  // Reading storage during the initial render instead would make the two
+  // passes disagree and fail hydration.
+  const restoredSessionId = useSyncExternalStore(
+    subscribeToFormState,
+    getActiveSessionId,
+    () => null
+  );
+
+  // Session started in this tab. Also pins the scanner in place while we
+  // navigate away, since leaving clears the stored session.
+  const [ownSessionId, setOwnSessionId] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const sessionId = ownSessionId ?? restoredSessionId;
 
   const handleConsent = async (values: ConsentValues) => {
     setBusy(true);
@@ -43,8 +57,7 @@ export default function ScanCapturePage() {
       }
       const newSid = res.data.sessionId;
       saveFormState({ activeSessionId: newSid });
-      setSessionId(newSid);
-      setConsented(true);
+      setOwnSessionId(newSid);
     } catch (err) {
       console.error(err);
       setError("Could not start the scan. Please try again.");
@@ -54,16 +67,28 @@ export default function ScanCapturePage() {
   };
 
   const handleComplete = ({ sessionId: sid }: { sessionId: string }) => {
+    setLeaving(true);
     clearActiveSession();
     router.push(`/scan/${sid}/result`);
   };
 
   const handleExit = () => {
+    setLeaving(true);
     clearActiveSession();
     router.push("/");
   };
 
-  if (!consented) {
+  // Neutral surface while the route transition is in flight, so clearing the
+  // stored session does not flash the consent form on the way out.
+  if (leaving) {
+    return (
+      <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-slate-950 px-4 py-10">
+        <div className="scan-grid pointer-events-none absolute inset-0 opacity-20" aria-hidden="true" />
+      </main>
+    );
+  }
+
+  if (!sessionId) {
     return (
       <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-slate-950 px-4 py-10">
         <div className="scan-grid pointer-events-none absolute inset-0 opacity-20" aria-hidden="true" />
@@ -80,11 +105,5 @@ export default function ScanCapturePage() {
     );
   }
 
-  return (
-    <FaceScanner
-      sessionId={sessionId ?? undefined}
-      onResult={handleComplete}
-      onExit={handleExit}
-    />
-  );
+  return <FaceScanner sessionId={sessionId} onResult={handleComplete} onExit={handleExit} />;
 }
