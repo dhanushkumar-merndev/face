@@ -3,8 +3,6 @@ export type ScanStep =
   | "CENTER"
   | "LEFT"
   | "RIGHT"
-  | "UP"
-  | "CENTER_FINAL"
   | "RECORDING_COMPLETE"
   | "UPLOADING"
   | "ANALYZING"
@@ -12,7 +10,7 @@ export type ScanStep =
   | "FAILED"
   | "CANCELLED";
 
-export type ChallengeStep = "CENTER" | "LEFT" | "RIGHT" | "UP" | "CENTER_FINAL";
+export type ChallengeStep = "CENTER" | "LEFT" | "RIGHT";
 
 export interface HeadPose {
   yaw: number;

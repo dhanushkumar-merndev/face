@@ -7,7 +7,7 @@ import { storeSessionToken } from "@/lib/auth/session-token-store";
 import { logger } from "@/lib/logger";
 import { rateLimit } from "@/lib/security/rate-limit";
 import { sha256 } from "@/lib/security/hash";
-import { SCAN_CONFIG } from "@/lib/face/config";
+import { SCAN_CONFIG, CHALLENGE_SEQUENCE, CHALLENGE_VERSION } from "@/lib/face/config";
 
 const CONSENT_VERSION = process.env.SCAN_CONSENT_VERSION ?? "2026-08-v1";
 
@@ -57,6 +57,8 @@ export async function POST(req: NextRequest) {
       subject_email: subjectEmail || null,
       subject_phone: subjectPhone || null,
       retention_until: retentionUntil,
+      challenge_version: CHALLENGE_VERSION,
+      challenge_sequence: CHALLENGE_SEQUENCE,
     })
     .select("id")
     .single();
@@ -93,7 +95,7 @@ export async function POST(req: NextRequest) {
 
   return ok({
     sessionId: session.id,
-    challenge: ["CENTER", "LEFT", "RIGHT", "UP", "CENTER_FINAL"],
+    challenge: CHALLENGE_SEQUENCE,
     maxDurationMs: SCAN_CONFIG.maxDurationMs,
   });
 }

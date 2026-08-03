@@ -1,4 +1,5 @@
-import type { UploadUrlsResult } from "./api";
+import type { ChallengeStep } from "@/lib/face/types";
+import type { PresignedSlot } from "./api";
 
 /** Uploads a Blob directly to a presigned S3 PUT URL. */
 export async function uploadToS3(
@@ -20,34 +21,51 @@ export async function uploadToS3(
   return { etag };
 }
 
-export interface UploadBundle {
-  video: { blob: Blob; presign: UploadUrlsResult["video"] };
-  bestFrame: { blob: Blob; presign: UploadUrlsResult["bestFrame"] };
-  thumbnail?: { blob: Blob; presign: NonNullable<UploadUrlsResult["thumbnail"]> };
+/** One direction's video segment and still frame, with their upload slots. */
+export interface CaptureUpload {
+  step: ChallengeStep;
+  video: { blob: Blob; presign: PresignedSlot };
+  frame: { blob: Blob; presign: PresignedSlot };
 }
 
-export async function uploadAll(bundle: UploadBundle): Promise<{
+export interface CaptureUploadResult {
+  step: ChallengeStep;
   videoEtag: string | null;
-  bestFrameEtag: string | null;
-}> {
-  const video = await uploadToS3(
-    bundle.video.presign.url,
-    bundle.video.blob,
-    bundle.video.presign.headers
-  );
-  const bestFrame = await uploadToS3(
-    bundle.bestFrame.presign.url,
-    bundle.bestFrame.blob,
-    bundle.bestFrame.presign.headers
-  );
+  frameEtag: string | null;
+}
 
-  if (bundle.thumbnail) {
-    await uploadToS3(
-      bundle.thumbnail.presign.url,
-      bundle.thumbnail.blob,
-      bundle.thumbnail.presign.headers
+/**
+ * Uploads every direction's pair, reporting progress as each object lands so
+ * the scanner can drive its upload meter.
+ */
+export async function uploadCaptures(
+  captures: CaptureUpload[],
+  onProgress?: (uploaded: number, total: number) => void
+): Promise<CaptureUploadResult[]> {
+  const total = captures.length * 2;
+  let uploaded = 0;
+
+  const results: CaptureUploadResult[] = [];
+
+  for (const capture of captures) {
+    const video = await uploadToS3(
+      capture.video.presign.url,
+      capture.video.blob,
+      capture.video.presign.headers
     );
+    uploaded += 1;
+    onProgress?.(uploaded, total);
+
+    const frame = await uploadToS3(
+      capture.frame.presign.url,
+      capture.frame.blob,
+      capture.frame.presign.headers
+    );
+    uploaded += 1;
+    onProgress?.(uploaded, total);
+
+    results.push({ step: capture.step, videoEtag: video.etag, frameEtag: frame.etag });
   }
 
-  return { videoEtag: video.etag, bestFrameEtag: bestFrame.etag };
+  return results;
 }

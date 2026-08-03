@@ -3,7 +3,7 @@ import {
   DetectFacesCommand,
   type DetectFacesCommandOutput,
 } from "@aws-sdk/client-rekognition";
-import { getBucket } from "@/lib/aws/s3";
+import { getBucket, getObjectBytes } from "@/lib/aws/s3";
 
 let rekognitionClient: RekognitionClient | null = null;
 
@@ -50,13 +50,26 @@ export type AgeAnalysisError = {
 /**
  * Runs DetectFaces on the best frontal frame and returns the estimated age
  * range. Strictly requires exactly one face with a high confidence score.
+ *
+ * Rekognition can only read images from real AWS S3, so when storage is Tigris
+ * (TIGRIS_ENDPOINT set) the frame bytes are fetched and passed as Image.Bytes.
  */
 export async function analyzeAgeRange(bestFrameObjectKey: string): Promise<AgeAnalysis> {
   const bucket = getBucket();
-  const command = new DetectFacesCommand({
-    Image: { S3Object: { Bucket: bucket, Name: bestFrameObjectKey } },
-    Attributes: ["ALL"],
-  });
+
+  let command: DetectFacesCommand;
+  if (process.env.TIGRIS_ENDPOINT) {
+    const bytes = await getObjectBytes(bestFrameObjectKey);
+    command = new DetectFacesCommand({
+      Image: { Bytes: bytes },
+      Attributes: ["ALL"],
+    });
+  } else {
+    command = new DetectFacesCommand({
+      Image: { S3Object: { Bucket: bucket, Name: bestFrameObjectKey } },
+      Attributes: ["ALL"],
+    });
+  }
 
   const response: DetectFacesCommandOutput = await getRekognitionClient().send(command);
   return parseDetectFacesResponse(response);

@@ -96,7 +96,9 @@ Copy `.env.example` to `.env.local` and fill in:
 3. Add your admin email to `admin_profiles` (or to `ADMIN_EMAIL_ALLOWLIST`).
 4. Configure the Auth provider (e.g. Google) used by `/admin/login`.
 
-### 4. AWS
+### 4. Storage: AWS S3 or Tigris Data
+
+**Option A — AWS S3**
 
 1. Create one **private** S3 bucket: `face-scan-private-<env>`.
    - Block all public access; disable ACLs; enable default encryption (SSE-KMS preferred).
@@ -121,6 +123,22 @@ Copy `.env.example` to `.env.local` and fill in:
   ]
 }
 ```
+
+**Option B — Tigris Data (S3-compatible)**
+
+Set in `.env.local`:
+
+```bash
+TIGRIS_ENDPOINT=https://t3.storage.dev
+AWS_ACCESS_KEY_ID=tid_your_access_key
+AWS_SECRET_ACCESS_KEY=tsec_your_secret_key
+AWS_S3_BUCKET=face-scan-private-dev
+```
+
+- Leave `AWS_REGION` unset (Tigris uses region `auto`; virtual-hosted-style addressing).
+- Create the bucket in the [Tigris Console](https://console.storage.dev).
+- Presigned URLs, `HeadObject` and `DeleteObjects` all work through the same AWS SDK v3 client.
+- **Note:** Amazon Rekognition can only read images from real AWS S3. When `TIGRIS_ENDPOINT` is set, the server fetches the best-frame bytes from Tigris and passes them to Rekognition as `Image.Bytes` — no extra setup needed.
 
 ### 5. Run
 

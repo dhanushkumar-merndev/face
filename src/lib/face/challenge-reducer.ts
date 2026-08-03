@@ -13,10 +13,14 @@ import { computeFrameScore } from "./frame-score";
  * The scanner state machine. Pure reducer — testable without the DOM.
  *
  * Flow:
- *   PREPARING -> CENTER -> LEFT -> RIGHT -> UP -> CENTER_FINAL
+ *   PREPARING -> CENTER -> LEFT -> RIGHT
  *   -> RECORDING_COMPLETE -> UPLOADING -> ANALYZING -> COMPLETED
- * With FAILED / CANCELLED as terminal states. There is intentionally no
- * DOWN step anywhere in this machine.
+ * With FAILED / CANCELLED as terminal states.
+ *
+ * Each direction is captured independently: `armed` flips to true the moment
+ * the user reaches the required pose (the component starts that direction's
+ * video segment there) and the step is pushed to `steps` once the hold
+ * completes (the component stops the segment and keeps its best still frame).
  */
 
 export type ChallengeAction =
@@ -61,6 +65,12 @@ export interface ChallengeState {
   stableFrames: number;
   /** Hold progress in ms, exposed for UI progress rings. */
   holdProgressMs: number;
+  /**
+   * True once the required pose has been reached for the active direction.
+   * The component starts this direction's video segment on the rising edge and
+   * stops it when the direction is pushed to `steps`.
+   */
+  armed: boolean;
   startTimeMs: number | null;
   recordedAtMs: number | null;
   lastFrameAtMs: number | null;
@@ -68,6 +78,8 @@ export interface ChallengeState {
   lastPose: HeadPose;
   steps: StepResult[];
   bestFrame: BestFrameCandidate | null;
+  /** Best still-frame score seen so far for the active direction. */
+  bestFrameScore: number;
   failureCode: string | null;
   failureMessage: string | null;
   cancelled: boolean;
@@ -88,6 +100,7 @@ const initialState: ChallengeState = {
   stableDurationMs: 0,
   stableFrames: 0,
   holdProgressMs: 0,
+  armed: false,
   startTimeMs: null,
   recordedAtMs: null,
   lastFrameAtMs: null,
@@ -95,6 +108,7 @@ const initialState: ChallengeState = {
   lastPose: { yaw: 0, pitch: 0, roll: 0 },
   steps: [],
   bestFrame: null,
+  bestFrameScore: 0,
   failureCode: null,
   failureMessage: null,
   cancelled: false,
@@ -123,6 +137,8 @@ function startStep(state: ChallengeState, index: number): ChallengeState {
     stableDurationMs: 0,
     stableFrames: 0,
     holdProgressMs: 0,
+    armed: false,
+    bestFrameScore: 0,
     failedTimeMs: null,
   };
 }
@@ -146,12 +162,13 @@ function finishStep(state: ChallengeState): ChallengeState {
 
   const newSteps = [...state.steps, result];
 
-  if (step === "CENTER_FINAL") {
+  if (nextIndex >= CHALLENGE_SEQUENCE.length) {
     return {
       ...state,
       steps: newSteps,
       step: "RECORDING_COMPLETE",
       currentStep: null,
+      armed: false,
       recordedAtMs: state.lastFrameAtMs,
     };
   }
@@ -181,13 +198,7 @@ export function reducer(state: ChallengeState, action: ChallengeAction): Challen
     case "FRAME": {
       const payload = action.payload;
 
-      if (
-        state.step === "CENTER" ||
-        state.step === "LEFT" ||
-        state.step === "RIGHT" ||
-        state.step === "UP" ||
-        state.step === "CENTER_FINAL"
-      ) {
+      if (state.step === "CENTER" || state.step === "LEFT" || state.step === "RIGHT") {
         return applyFrame(state, payload);
       }
       return state;
@@ -269,10 +280,12 @@ function applyFrame(state: ChallengeState, payload: FramePayload): ChallengeStat
     }
   }
 
-  // Best-frame scoring during CENTER_FINAL (actual capture happens in the
-  // component from original video resolution).
+  // Every direction keeps its own still frame. Only frames that satisfy the
+  // direction are eligible, so the LEFT still is genuinely a left-turned face.
+  // The actual pixel capture happens in the component at full video resolution.
   let bestFrame = state.bestFrame;
-  if (currentStep === "CENTER_FINAL" && face && payload.frameWidth && payload.frameHeight) {
+  let bestFrameScore = state.bestFrameScore;
+  if (passes && face && payload.frameWidth && payload.frameHeight) {
     const score = computeFrameScore({
       pose,
       face,
@@ -282,12 +295,17 @@ function applyFrame(state: ChallengeState, payload: FramePayload): ChallengeStat
       sharpness: payload.sharpness ?? 0,
       luminance: payload.luminance ?? 0.5,
     });
-    if (score > (bestFrame?.score ?? 0)) {
+    if (score > bestFrameScore) {
+      bestFrameScore = score;
       bestFrame = { score, timestampMs: now };
     }
   }
 
   const qualitySummary = aggregateQuality(state, payload);
+
+  // Sticky within a direction: brief wobbles must not chop the video segment
+  // into pieces, so arming only resets when the direction changes.
+  const armed = state.armed || passes;
 
   const holdProgressMs = stableDurationMs;
   const holdComplete = stableDurationMs >= SCAN_CONFIG.requiredHoldMs &&
@@ -302,6 +320,8 @@ function applyFrame(state: ChallengeState, payload: FramePayload): ChallengeStat
       lastFrameAtMs: now,
       lastPose: pose,
       bestFrame,
+      bestFrameScore,
+      armed,
       holdProgressMs,
     });
   }
@@ -315,7 +335,9 @@ function applyFrame(state: ChallengeState, payload: FramePayload): ChallengeStat
     lastFrameAtMs: now,
     lastPose: pose,
     holdProgressMs,
+    armed,
     bestFrame,
+    bestFrameScore,
   };
 }
 

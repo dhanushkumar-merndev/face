@@ -5,12 +5,10 @@ import { useRouter } from "next/navigation";
 import { ConsentForm, type ConsentValues } from "@/components/scan/ConsentForm";
 import { FaceScanner } from "@/components/scan/FaceScanner";
 import { scanApi } from "@/lib/scan/api";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
- * Page 2/3/4/5: consent gate -> camera permission -> guided scan -> upload.
- * The camera is NOT started before consent.
+ * Consent gate -> camera permission -> full-screen guided capture.
+ * The camera is NOT started before consent is given.
  */
 export default function ScanCapturePage() {
   const router = useRouter();
@@ -47,36 +45,26 @@ export default function ScanCapturePage() {
 
   if (!consented) {
     return (
-      <main className="flex min-h-[80vh] flex-col items-center justify-center gap-4 px-4 py-10">
-        <ConsentForm onConsent={handleConsent} busy={busy} />
-        {error && <p className="text-sm text-red-600">{error}</p>}
+      <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-slate-950 px-4 py-10">
+        <div className="scan-grid pointer-events-none absolute inset-0 opacity-20" aria-hidden="true" />
+        <div className="pointer-events-none absolute left-1/2 top-0 h-[38rem] w-[38rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-500/15 blur-[120px]" />
+        <div className="relative z-10 w-full max-w-lg">
+          <ConsentForm onConsent={handleConsent} busy={busy} />
+          {error && (
+            <p className="mt-4 text-center text-sm text-rose-400" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
       </main>
     );
   }
 
   return (
-    <main className="flex min-h-[80vh] flex-col items-center justify-center gap-4 px-4 py-10">
-      <FaceScanner
-        sessionId={sessionId ?? undefined}
-        onResult={({ sessionId: sid }) => {
-          router.push(`/scan/${sid}/result`);
-        }}
-      />
-      <Card className="w-full max-w-lg">
-        <CardHeader>
-          <CardTitle className="text-base">Preparation tips</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-1.5 text-sm text-muted-foreground">
-          <p>• Remove anything blocking your face (mask, glasses glare)</p>
-          <p>• Use even lighting</p>
-          <p>• Keep only one person in view</p>
-          <p>• Hold the device steady</p>
-          <p>• Do not use beauty filters</p>
-        </CardContent>
-      </Card>
-      <Button variant="ghost" onClick={() => router.push("/")}>
-        Cancel scan
-      </Button>
-    </main>
+    <FaceScanner
+      sessionId={sessionId ?? undefined}
+      onResult={({ sessionId: sid }) => router.push(`/scan/${sid}/result`)}
+      onExit={() => router.push("/")}
+    />
   );
 }

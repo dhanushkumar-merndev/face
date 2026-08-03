@@ -1,24 +1,36 @@
 import { pickMimeType, extensionForMime } from "./mime";
 
 /**
- * MediaRecorder helpers. Chunks are collected by the caller; the final Blob is
- * assembled from them when recording stops. No audio is recorded.
+ * MediaRecorder helpers. One recorder is created per capture direction: it
+ * starts when the user reaches the pose and stops when the hold completes, so
+ * each direction yields its own short, self-contained video segment.
+ *
+ * The chunk array is owned by the recorder object and shared by the
+ * `dataavailable` handler and `stop()`, so the assembled Blob always contains
+ * every chunk — including those emitted before `stop()` was called.
  */
 
 export interface RecordingSession {
   blob: Blob;
   mimeType: string;
   extension: string;
+  durationMs: number;
+}
+
+export interface SegmentRecorder {
+  readonly recorder: MediaRecorder;
+  readonly mimeType: string;
+  readonly extension: string;
+  /** Stops recording and resolves with the assembled segment. */
+  stop(): Promise<RecordingSession>;
+  /** Aborts without producing a segment (cancel / unmount). */
+  abort(): void;
 }
 
 /**
- * Create a MediaRecorder for a video-only stream. Returns the recorder plus a
- * `chunks` array the caller owns — push every `dataavailable` Blob into it and
- * read the assembled Blob via `finalizeRecording`.
+ * Creates and immediately starts a video-only recorder for one direction.
  */
-export function createRecorder(
-  stream: MediaStream
-): { recorder: MediaRecorder; chunks: Blob[]; mimeType: string; extension: string } {
+export function startSegmentRecorder(stream: MediaStream): SegmentRecorder {
   if (typeof MediaRecorder === "undefined") {
     throw new Error("MediaRecorder is not supported in this browser.");
   }
@@ -26,49 +38,49 @@ export function createRecorder(
   const mime = pickMimeType((m) => MediaRecorder.isTypeSupported(m));
   const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
   const chunks: Blob[] = [];
+  const startedAt = performance.now();
 
   recorder.ondataavailable = (event) => {
-    if (event.data && event.data.size > 0) {
-      chunks.push(event.data);
-    }
+    if (event.data && event.data.size > 0) chunks.push(event.data);
+  };
+
+  // A timeslice keeps memory bounded and guarantees at least one chunk even if
+  // the segment is stopped very quickly.
+  recorder.start(500);
+
+  const resolvedMime = recorder.mimeType || mime || "";
+
+  const assemble = (): RecordingSession => {
+    const type = recorder.mimeType || resolvedMime;
+    return {
+      blob: new Blob(chunks, { type }),
+      mimeType: type,
+      extension: extensionForMime(type),
+      durationMs: Math.round(performance.now() - startedAt),
+    };
   };
 
   return {
     recorder,
-    chunks,
-    mimeType: recorder.mimeType || mime || "",
-    extension: extensionForMime(recorder.mimeType || mime),
-  };
-}
-
-export function startRecording(recorder: MediaRecorder): void {
-  recorder.start(1000);
-}
-
-export function stopRecording(recorder: MediaRecorder): Promise<RecordingSession> {
-  return new Promise((resolve, reject) => {
-    if (recorder.state === "inactive") {
-      reject(new Error("Recorder is already inactive."));
-      return;
-    }
-
-    const chunks: Blob[] = [];
-    const originalOnData = recorder.ondataavailable;
-    recorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) chunks.push(event.data);
-      originalOnData?.call(recorder, event);
-    };
-
-    recorder.onstop = () => {
-      const type = recorder.mimeType || "";
-      resolve({
-        blob: new Blob(chunks, { type }),
-        mimeType: type,
-        extension: extensionForMime(type),
+    mimeType: resolvedMime,
+    extension: extensionForMime(resolvedMime),
+    stop() {
+      return new Promise<RecordingSession>((resolve, reject) => {
+        if (recorder.state === "inactive") {
+          resolve(assemble());
+          return;
+        }
+        recorder.onstop = () => resolve(assemble());
+        recorder.onerror = () => reject(new Error("MediaRecorder failed during recording."));
+        recorder.stop();
       });
-    };
-    recorder.onerror = () => reject(new Error("MediaRecorder failed during recording."));
-
-    recorder.stop();
-  });
+    },
+    abort() {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      recorder.onerror = null;
+      if (recorder.state !== "inactive") recorder.stop();
+      chunks.length = 0;
+    },
+  };
 }

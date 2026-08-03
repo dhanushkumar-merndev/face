@@ -12,9 +12,14 @@ import { createClient } from "@supabase/supabase-js";
 import { config } from "dotenv";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-config({ path: join(root, ".env.local") });
+
+// Load .env.local first, then fall back to .env (keeps local overrides winning).
+const envLocal = join(root, ".env.local");
+if (existsSync(envLocal)) config({ path: envLocal });
+config({ path: join(root, ".env") });
 
 const ADMIN_EMAIL = "admin@gmail.com";
 const ADMIN_PASSWORD = "Face@admin123";
@@ -39,7 +44,7 @@ async function main() {
     .eq("email", ADMIN_EMAIL)
     .maybeSingle();
 
-  let userId: string;
+  let userId;
 
   if (existing) {
     userId = existing.user_id;

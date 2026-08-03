@@ -2,12 +2,15 @@ import { NextRequest } from "next/server";
 import {
   completeScanSchema,
   isRequiredSequence,
+  hasCaptureForEveryStep,
 } from "@/lib/validation/scan";
 import { fromZodError, ok, fail, internalError } from "@/lib/api/respond";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { resolveSessionFromRequest } from "@/lib/auth/session-guard";
 import { headObject } from "@/lib/aws/s3";
 import { analyzeAgeRange, AgeAnalysisValidationError } from "@/lib/aws/rekognition";
+import { analyzeSkin, SkinAnalysisError } from "@/lib/groq/skin-analysis";
+import { isGroqConfigured } from "@/lib/groq/client";
 import { logger } from "@/lib/logger";
 
 export async function POST(
@@ -33,15 +36,18 @@ export async function POST(
 
   const input = parsed.data;
 
-  // 1. Verify the challenge sequence is exactly CENTER->LEFT->RIGHT->UP->CENTER_FINAL.
+  // 1. Verify the challenge sequence is exactly CENTER -> LEFT -> RIGHT and
+  //    that every direction uploaded its own video segment and frame.
   if (!isRequiredSequence(input.steps)) {
     return fail("invalid_challenge", "The scan steps are not in the required order or were not all passed.");
   }
+  if (!hasCaptureForEveryStep(input.captures)) {
+    return fail("invalid_capture", "Each direction must supply exactly one video and one frame.");
+  }
 
-  // The schema already rejects unknown steps (incl. DOWN) via z.enum.
-  const containsDown = input.steps.some((s) => (s as { step: string }).step === "DOWN");
-  if (containsDown) {
-    return fail("invalid_challenge", "Invalid challenge sequence.");
+  const analysisCapture = input.captures.find((c) => c.step === input.analysisStep);
+  if (!analysisCapture) {
+    return fail("invalid_capture", "The frame selected for analysis was not uploaded.");
   }
 
   const supabase = getSupabaseAdmin();
@@ -57,47 +63,59 @@ export async function POST(
     return fail("invalid_state", "Scan is not in an analyzable state.", 409);
   }
 
-  // 2. Verify S3 objects exist and metadata matches.
-  const [videoHead, frameHead] = await Promise.all([
-    headObject(input.video.objectKey),
-    headObject(input.bestFrame.objectKey),
+  // 2. Verify every uploaded object exists and its size matches the claim.
+  const expected = input.captures.flatMap((capture) => [
+    { step: capture.step, kind: "video" as const, key: capture.video.objectKey, byteSize: capture.video.byteSize },
+    { step: capture.step, kind: "frame" as const, key: capture.frame.objectKey, byteSize: capture.frame.byteSize },
   ]);
 
-  if (!videoHead.exists || !frameHead.exists) {
-    logger.error("complete_headobject_missing", { sessionId });
-    return fail("asset_missing", "One or more uploaded assets are missing.", 409);
+  const heads = new Map<string, Awaited<ReturnType<typeof headObject>>>();
+  const headResults = await Promise.all(expected.map((e) => headObject(e.key)));
+
+  for (let i = 0; i < expected.length; i += 1) {
+    const entry = expected[i];
+    const head = headResults[i];
+    heads.set(entry.key, head);
+
+    if (!head.exists) {
+      logger.error("complete_headobject_missing", { sessionId, step: entry.step, kind: entry.kind });
+      return fail("asset_missing", "One or more uploaded assets are missing.", 409);
+    }
+    if (head.contentLength !== entry.byteSize) {
+      return fail("asset_mismatch", "An uploaded asset size does not match the declared size.", 409);
+    }
   }
 
-  if (videoHead.contentLength !== input.video.byteSize) {
-    return fail("asset_mismatch", "The uploaded video size does not match the declared size.", 409);
-  }
-
-  // 3. Persist asset rows.
-  const assetRows = [
+  // 3. Persist one asset row per direction per kind.
+  const bucket = process.env.AWS_S3_BUCKET!;
+  const assetRows = input.captures.flatMap((capture) => [
     {
       session_id: sessionId,
       kind: "video",
-      bucket: process.env.AWS_S3_BUCKET!,
-      object_key: input.video.objectKey,
-      mime_type: input.video.mimeType,
-      byte_size: input.video.byteSize,
-      etag: input.video.etag ?? videoHead.etag ?? null,
+      step: capture.step,
+      bucket,
+      object_key: capture.video.objectKey,
+      mime_type: capture.video.mimeType,
+      byte_size: capture.video.byteSize,
+      duration_ms: capture.video.durationMs ?? null,
+      etag: capture.video.etag ?? heads.get(capture.video.objectKey)?.etag ?? null,
     },
     {
       session_id: sessionId,
       kind: "best_frame",
-      bucket: process.env.AWS_S3_BUCKET!,
-      object_key: input.bestFrame.objectKey,
-      mime_type: input.bestFrame.mimeType,
-      byte_size: input.bestFrame.byteSize,
-      etag: input.bestFrame.etag ?? frameHead.etag ?? null,
-      width: input.bestFrame.width,
-      height: input.bestFrame.height,
+      step: capture.step,
+      bucket,
+      object_key: capture.frame.objectKey,
+      mime_type: capture.frame.mimeType,
+      byte_size: capture.frame.byteSize,
+      etag: capture.frame.etag ?? heads.get(capture.frame.objectKey)?.etag ?? null,
+      width: capture.frame.width,
+      height: capture.frame.height,
     },
-  ];
+  ]);
 
   const { error: assetError } = await supabase.from("scan_assets").upsert(assetRows, {
-    onConflict: "session_id,kind",
+    onConflict: "session_id,kind,step",
   });
   if (assetError) {
     logger.error("complete_assets_failed", { sessionId, error: assetError.message });
@@ -115,10 +133,25 @@ export async function POST(
     })
     .eq("id", sessionId);
 
-  // 5. Rekognition DetectFaces on the best frame.
+  // Persist step rows regardless of how analysis turns out.
+  const stepRows = input.steps.map((s) => ({
+    session_id: sessionId,
+    step: s.step,
+    step_order: s.stepOrder,
+    passed: s.passed,
+    hold_ms: s.holdMs,
+    representative_yaw: s.yaw,
+    representative_pitch: s.pitch,
+    representative_roll: s.roll,
+    frame_timestamp_ms: s.frameTimestampMs,
+    completed_at: new Date().toISOString(),
+  }));
+  await supabase.from("scan_steps").upsert(stepRows, { onConflict: "session_id,step" });
+
+  // 5. Rekognition DetectFaces on the frontal frame.
   let ageResult;
   try {
-    ageResult = await analyzeAgeRange(input.bestFrame.objectKey);
+    ageResult = await analyzeAgeRange(analysisCapture.frame.objectKey);
   } catch (err) {
     if (err instanceof AgeAnalysisValidationError) {
       // Safe failure: keep media per retention, mark failed, allow admin retry.
@@ -127,8 +160,9 @@ export async function POST(
         .update({
           status: "failed",
           failure_code: err.code,
-          failure_message: "The age could not be estimated from the best frame.",
+          failure_message: "The age could not be estimated from the captured frame.",
           custom_challenge_passed: true,
+          skin_status: "skipped",
         })
         .eq("id", sessionId);
       await supabase.from("scan_audit_events").insert({
@@ -141,16 +175,30 @@ export async function POST(
         sessionId,
         status: "failed",
         ageRange: null,
+        skin: null,
         completedAt: null,
         failureCode: err.code,
-        failureMessage: "The age could not be estimated from the best frame.",
+        failureMessage: "The age could not be estimated from the captured frame.",
       });
     }
     logger.error("rekognition_error", { sessionId, error: (err as Error).message });
     return internalError("Age analysis failed. Please try again later.");
   }
 
-  // 6. Persist results.
+  // 6. Groq skin read-out. Optional and never fatal: a scan without a skin
+  //    score is still a completed scan.
+  const skin = await runSkinAnalysis({
+    sessionId,
+    captures: input.captures.map((c) => ({ step: c.step, objectKey: c.frame.objectKey })),
+    context: {
+      ageLow: ageResult.ageLow,
+      ageHigh: ageResult.ageHigh,
+      brightness: input.qualitySummary.averageBrightness,
+      sharpness: input.qualitySummary.bestSharpness,
+    },
+  });
+
+  // 7. Persist results.
   const { error: resultError } = await supabase
     .from("scan_sessions")
     .update({
@@ -168,6 +216,13 @@ export async function POST(
       custom_challenge_passed: true,
       failure_code: null,
       failure_message: null,
+      skin_status: skin.status,
+      skin_age: skin.result?.skinAge ?? null,
+      skin_confidence: skin.result?.confidence ?? null,
+      skin_analysis: (skin.result ?? null) as unknown as Record<string, unknown> | null,
+      skin_provider: skin.result?.provider ?? null,
+      skin_model: skin.result?.model ?? null,
+      skin_analyzed_at: skin.result ? new Date().toISOString() : null,
     })
     .eq("id", sessionId);
 
@@ -176,37 +231,52 @@ export async function POST(
     return internalError("Could not save the analysis result.");
   }
 
-  // Persist step rows.
-  const stepRows = input.steps.map((s) => ({
-    session_id: sessionId,
-    step: s.step,
-    step_order: s.stepOrder,
-    passed: s.passed,
-    hold_ms: s.holdMs,
-    representative_yaw: s.yaw,
-    representative_pitch: s.pitch,
-    representative_roll: s.roll,
-    frame_timestamp_ms: s.frameTimestampMs,
-    completed_at: new Date().toISOString(),
-  }));
-  await supabase.from("scan_steps").upsert(stepRows, { onConflict: "session_id,step" });
-
   await supabase.from("scan_audit_events").insert({
     session_id: sessionId,
     event_type: "scan_completed",
-    event_data: { ageLow: ageResult.ageLow, ageHigh: ageResult.ageHigh },
+    event_data: {
+      ageLow: ageResult.ageLow,
+      ageHigh: ageResult.ageHigh,
+      skinStatus: skin.status,
+    },
   });
 
   logger.info("scan_completed", {
     sessionId,
     ageLow: ageResult.ageLow,
     ageHigh: ageResult.ageHigh,
+    skinStatus: skin.status,
   });
 
   return ok({
     sessionId,
     status: "completed",
     ageRange: { low: ageResult.ageLow, high: ageResult.ageHigh },
+    skin: skin.result,
     completedAt: new Date().toISOString(),
   });
+}
+
+type SkinOutcome = {
+  status: "completed" | "failed" | "skipped";
+  result: Awaited<ReturnType<typeof analyzeSkin>> | null;
+};
+
+/** Wraps the vision pass so no provider problem can fail a completed scan. */
+async function runSkinAnalysis(args: {
+  sessionId: string;
+  captures: Array<{ step: string; objectKey: string }>;
+  context: { ageLow: number; ageHigh: number; brightness: number; sharpness: number };
+}): Promise<SkinOutcome> {
+  if (!isGroqConfigured()) {
+    return { status: "skipped", result: null };
+  }
+  try {
+    const result = await analyzeSkin({ frames: args.captures, context: args.context });
+    return { status: "completed", result };
+  } catch (err) {
+    const code = err instanceof SkinAnalysisError ? err.code : "unknown";
+    logger.warn("skin_analysis_failed", { sessionId: args.sessionId, code });
+    return { status: "failed", result: null };
+  }
 }

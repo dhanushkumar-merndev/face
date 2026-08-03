@@ -20,14 +20,16 @@ export async function POST(
   const { sessionId } = await params;
   const supabase = getSupabaseAdmin();
 
-  const { data: asset } = await supabase
+  const { data: frames } = await supabase
     .from("scan_assets")
-    .select("object_key")
+    .select("object_key, step")
     .eq("session_id", sessionId)
-    .eq("kind", "best_frame")
-    .maybeSingle();
+    .eq("kind", "best_frame");
 
-  if (!asset) return fail("not_found", "No best frame asset found.", 404);
+  // Age estimation needs the frontal view; fall back for legacy sessions.
+  const asset = frames?.find((f) => f.step === "CENTER") ?? frames?.[0];
+
+  if (!asset) return fail("not_found", "No frontal frame asset found.", 404);
 
   const head = await headObject(asset.object_key);
   if (!head.exists) return fail("asset_missing", "The best frame is missing from storage.", 409);

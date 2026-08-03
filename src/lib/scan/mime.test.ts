@@ -35,9 +35,9 @@ describe("S3 key generation", () => {
     expect(key).toMatch(/^face-scans\/default\/\d{4}\/\d{2}\/abc-123\/original\.webm$/);
   });
 
-  it("uses best-frame.jpg for the best frame", () => {
-    const key = buildObjectKey("abc-123", "best_frame", "jpg");
-    expect(key).toMatch(/best-frame\.jpg$/);
+  it("uses frame.jpg scoped to the step for the best frame", () => {
+    const key = buildObjectKey("abc-123", "best_frame", "jpg", "CENTER");
+    expect(key).toMatch(/\/center\/frame\.jpg$/);
   });
 
   it("uses thumbnail.jpg for thumbnails", () => {

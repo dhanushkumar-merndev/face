@@ -47,20 +47,22 @@ export async function POST(
   const parsed = uploadUrlsSchema.safeParse(body);
   if (!parsed.success) return fromZodError(parsed.error);
 
-  const { video, bestFrame } = parsed.data;
+  const { captures } = parsed.data;
 
-  // Validate MIME + size.
-  if (!ALLOWED_VIDEO_MIMES.includes(video.mimeType)) {
-    return fail("invalid_mime", "The video MIME type is not allowed.");
-  }
-  if (video.byteSize > MAX_VIDEO_BYTES || video.byteSize < 1) {
-    return fail("invalid_size", "The video size is outside the allowed range.");
-  }
-  if (!ALLOWED_IMAGE_MIMES.includes(bestFrame.mimeType)) {
-    return fail("invalid_mime", "The image MIME type is not allowed.");
-  }
-  if (bestFrame.byteSize > MAX_IMAGE_BYTES || bestFrame.byteSize < 1) {
-    return fail("invalid_size", "The image size is outside the allowed range.");
+  // Validate MIME + size for every direction's pair.
+  for (const capture of captures) {
+    if (!ALLOWED_VIDEO_MIMES.includes(capture.video.mimeType)) {
+      return fail("invalid_mime", "The video MIME type is not allowed.");
+    }
+    if (capture.video.byteSize > MAX_VIDEO_BYTES || capture.video.byteSize < 1) {
+      return fail("invalid_size", "The video size is outside the allowed range.");
+    }
+    if (!ALLOWED_IMAGE_MIMES.includes(capture.frame.mimeType)) {
+      return fail("invalid_mime", "The image MIME type is not allowed.");
+    }
+    if (capture.frame.byteSize > MAX_IMAGE_BYTES || capture.frame.byteSize < 1) {
+      return fail("invalid_size", "The image size is outside the allowed range.");
+    }
   }
 
   const supabase = getSupabaseAdmin();
@@ -76,25 +78,31 @@ export async function POST(
   }
 
   try {
-    // Server-owned keys only.
-    const videoKey = buildObjectKey(sessionId, "video", video.extension);
-    const bestFrameKey = buildObjectKey(sessionId, "best_frame", "jpg");
-
-    const [videoPresign, bestFramePresign] = await Promise.all([
-      createPresignedUpload(videoKey, video.mimeType, UPLOAD_URL_TTL),
-      createPresignedUpload(bestFrameKey, bestFrame.mimeType, UPLOAD_URL_TTL),
-    ]);
+    // Server-owned keys only, namespaced per direction.
+    const presigned = await Promise.all(
+      captures.map(async (capture) => {
+        const [videoPresign, framePresign] = await Promise.all([
+          createPresignedUpload(
+            buildObjectKey(sessionId, "video", capture.video.extension, capture.step),
+            capture.video.mimeType,
+            UPLOAD_URL_TTL
+          ),
+          createPresignedUpload(
+            buildObjectKey(sessionId, "best_frame", "jpg", capture.step),
+            capture.frame.mimeType,
+            UPLOAD_URL_TTL
+          ),
+        ]);
+        return { step: capture.step, video: videoPresign, frame: framePresign };
+      })
+    );
 
     await supabase
       .from("scan_sessions")
       .update({ status: "uploading" })
       .eq("id", sessionId);
 
-    return ok({
-      video: videoPresign,
-      bestFrame: bestFramePresign,
-      thumbnail: null,
-    });
+    return ok({ captures: presigned });
   } catch (err) {
     logger.error("upload_urls_failed", { sessionId, error: (err as Error).message });
     return internalError("Could not generate upload URLs.");

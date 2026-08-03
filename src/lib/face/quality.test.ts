@@ -3,7 +3,6 @@ import {
   centerCondition,
   leftCondition,
   rightCondition,
-  upCondition,
   evaluateQuality,
 } from "@/lib/face/quality";
 import type { HeadPose, FaceInfo } from "@/lib/face/types";
@@ -52,14 +51,6 @@ describe("step predicates", () => {
     expect(rightCondition(input({ yaw: -25, pitch: 0, roll: 0 }))).toBe(false);
   });
 
-  it("up passes with negative pitch (looking up convention)", () => {
-    expect(upCondition(input({ yaw: 0, pitch: -20, roll: 0 }))).toBe(true);
-  });
-
-  it("up fails when pitch is positive or neutral", () => {
-    expect(upCondition(input({ yaw: 0, pitch: 0, roll: 0 }))).toBe(false);
-    expect(upCondition(input({ yaw: 0, pitch: 20, roll: 0 }))).toBe(false);
-  });
 });
 
 describe("evaluateQuality", () => {

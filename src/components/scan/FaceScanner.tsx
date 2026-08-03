@@ -1,38 +1,55 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { FaceLandmarker } from "@mediapipe/tasks-vision";
+import { X } from "lucide-react";
 import {
   SCAN_CONFIG,
+  CHALLENGE_SEQUENCE,
   TARGET_INFERENCE_INTERVAL_MS,
   MAX_RECORDING_DURATION_MS,
   MAX_VIDEO_UPLOAD_BYTES,
 } from "@/lib/face/config";
-import type { FaceInfo, QualityMessage } from "@/lib/face/types";
+import type { FaceInfo, QualityMessage, ChallengeStep } from "@/lib/face/types";
 import { matrixToHeadPose } from "@/lib/face/pose";
 import { reducer, initialState } from "@/lib/face/challenge-reducer";
+import { STEP_CONDITIONS } from "@/lib/face/quality";
+import { computeFrameScore } from "@/lib/face/frame-score";
 import { computeSharpness, computeLuminance } from "@/lib/face/canvas-quality";
-import { createRecorder, startRecording, stopRecording, type RecordingSession } from "@/lib/scan/media-recorder";
-import { loadImageFromVideo, cropFaceCanvas, canvasToJpeg, makeThumbnail } from "@/lib/scan/best-frame";
+import type { MeshTone } from "@/lib/face/mesh";
+import { startSegmentRecorder, type SegmentRecorder, type RecordingSession } from "@/lib/scan/media-recorder";
+import { loadImageFromVideo, cropFaceCanvas, canvasToJpeg } from "@/lib/scan/best-frame";
 import { scanApi } from "@/lib/scan/api";
-import { uploadAll } from "@/lib/scan/upload";
+import { uploadCaptures, type CaptureUpload } from "@/lib/scan/upload";
 import { CameraPreview } from "./CameraPreview";
-import { FaceGuideOverlay } from "./FaceGuideOverlay";
+import { FaceMeshOverlay, type MeshFrame } from "./FaceMeshOverlay";
 import { DirectionInstruction } from "./DirectionInstruction";
 import { ScanProgress } from "./ScanProgress";
-import { QualityMessage as QualityMessageView } from "./QualityMessage";
 import { UploadProgress } from "./UploadProgress";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 
 type ScanPhase = "preparing" | "active" | "uploading" | "done" | "error";
+
+interface CapturedFrame {
+  blob: Blob;
+  width: number;
+  height: number;
+  score: number;
+}
+
+const EMPTY_SCORES: Record<ChallengeStep, number> = { CENTER: 0, LEFT: 0, RIGHT: 0 };
+
+/** At most one full-resolution still encode per this interval, per direction. */
+const CAPTURE_THROTTLE_MS = 140;
 
 export function FaceScanner({
   sessionId,
   onResult,
+  onExit,
 }: {
   sessionId?: string;
   onResult?: (result: { ageRange: { low: number; high: number } | null; sessionId: string }) => void;
+  onExit?: () => void;
 }) {
   const [phase, setPhase] = useState<ScanPhase>("preparing");
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -44,6 +61,9 @@ export function FaceScanner({
   const [landmarker, setLandmarker] = useState<FaceLandmarker | null>(null);
   const [landmarkerError, setLandmarkerError] = useState<string | null>(null);
   const [faceCentered, setFaceCentered] = useState(false);
+  const [recordingStep, setRecordingStep] = useState<ChallengeStep | null>(null);
+  const [capturedSteps, setCapturedSteps] = useState<ChallengeStep[]>([]);
+  const [flashStep, setFlashStep] = useState<ChallengeStep | null>(null);
 
   const [state, dispatch] = useReducer(reducer, undefined, () => initialState);
   const stateRef = useRef(state);
@@ -53,15 +73,23 @@ export function FaceScanner({
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const bestFrameRef = useRef<{ blob: Blob; width: number; height: number } | null>(null);
-  const thumbnailRef = useRef<Blob | null>(null);
+  const meshFrameRef = useRef<MeshFrame | null>(null);
+
+  // Per-direction capture buffers.
+  const segmentsRef = useRef<Partial<Record<ChallengeStep, RecordingSession>>>({});
+  const framesRef = useRef<Partial<Record<ChallengeStep, CapturedFrame>>>({});
+  const captureScoreRef = useRef<Record<ChallengeStep, number>>({ ...EMPTY_SCORES });
+  const lastCaptureAtRef = useRef<Record<ChallengeStep, number>>({ ...EMPTY_SCORES });
+  const pendingEncodesRef = useRef<Promise<unknown>[]>([]);
+  const activeRecorderRef = useRef<{ step: ChallengeStep; rec: SegmentRecorder } | null>(null);
+
   const lastInferenceRef = useRef(0);
   const rafRef = useRef(0);
   const scanStartRef = useRef<number | null>(null);
   const mediaSessionIdRef = useRef(sessionId);
   const resultSentRef = useRef(false);
+  const uploadStartedRef = useRef(false);
+  const recordingAnnouncedRef = useRef(false);
 
   // Session id may arrive asynchronously from the parent.
   useEffect(() => {
@@ -138,6 +166,34 @@ export function FaceScanner({
   }, []);
 
   // -------------------------------------------------------------------------
+  // Per-direction still capture, taken at full video resolution.
+  // -------------------------------------------------------------------------
+  const captureFrameFor = useCallback(
+    (step: ChallengeStep, video: HTMLVideoElement, face: FaceInfo, score: number) => {
+      const now = performance.now();
+      if (now - lastCaptureAtRef.current[step] < CAPTURE_THROTTLE_MS) return;
+      lastCaptureAtRef.current[step] = now;
+
+      try {
+        const original = loadImageFromVideo(video);
+        const cropped = cropFaceCanvas(original, face.box);
+        const encode = canvasToJpeg(cropped).then((blob) => {
+          const existing = framesRef.current[step];
+          // A later encode may resolve out of order; keep the best score.
+          if (!existing || score >= existing.score) {
+            framesRef.current[step] = { blob, width: cropped.width, height: cropped.height, score };
+          }
+        });
+        pendingEncodesRef.current.push(encode);
+        void encode.catch(() => {});
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    []
+  );
+
+  // -------------------------------------------------------------------------
   // runInference — defined before the loop that uses it.
   // -------------------------------------------------------------------------
   const runInference = useCallback(() => {
@@ -152,7 +208,6 @@ export function FaceScanner({
 
     const frameWidth = video.videoWidth || 1280;
     const frameHeight = video.videoHeight || 720;
-
     const faceCount = faces.length;
 
     let face: FaceInfo | undefined;
@@ -160,6 +215,17 @@ export function FaceScanner({
     let luminance: number | undefined;
     let sharpness: number | undefined;
     let qualityMessage: QualityMessage = faceCount === 0 ? "no_face" : faceCount > 1 ? "multiple_faces" : "ok";
+
+    // Feed the structure overlay even when quality is poor, so the user can
+    // see the mesh lock on while they adjust.
+    meshFrameRef.current =
+      faceCount >= 1
+        ? {
+            landmarks: faces[0].map((p) => ({ x: p.x, y: p.y })),
+            videoWidth: frameWidth,
+            videoHeight: frameHeight,
+          }
+        : null;
 
     if (faceCount === 1) {
       const lm0 = faces[0];
@@ -220,23 +286,33 @@ export function FaceScanner({
       setFaceCentered(true);
     }
 
-    const currentStep = stateRef.current.step;
-
-    // Best-frame capture during CENTER_FINAL from the ORIGINAL video frame.
-    if (currentStep === "CENTER_FINAL" && face) {
-      const originalCanvas = loadImageFromVideo(video);
-      const cropped = cropFaceCanvas(originalCanvas, face.box);
-      const [jpegBlob, thumbBlob] = [canvasToJpeg(cropped), canvasToJpeg(makeThumbnail(cropped))];
-      Promise.all([jpegBlob, thumbBlob]).then(([jpeg, thumb]) => {
-        if (!bestFrameRef.current || jpeg.size > bestFrameRef.current.blob.size) {
-          bestFrameRef.current = {
-            blob: jpeg,
-            width: cropped.width,
-            height: cropped.height,
-          };
-          thumbnailRef.current = thumb;
-        }
+    // Each direction keeps its own best still, captured only from frames that
+    // actually satisfy that direction.
+    const currentStep = stateRef.current.currentStep;
+    if (currentStep && face && faceCount === 1) {
+      const passes = STEP_CONDITIONS[currentStep]({
+        pose,
+        face,
+        frameWidth,
+        frameHeight,
+        faceCount,
+        qualityOk,
       });
+      if (passes) {
+        const score = computeFrameScore({
+          pose,
+          face,
+          frameWidth,
+          frameHeight,
+          quality: { ok: qualityOk, message: qualityMessage },
+          sharpness: sharpness ?? 0,
+          luminance: luminance ?? 0.5,
+        });
+        if (score > captureScoreRef.current[currentStep]) {
+          captureScoreRef.current[currentStep] = score;
+          captureFrameFor(currentStep, video, face, score);
+        }
+      }
     }
 
     const elapsedMs = scanStartRef.current ? performance.now() - scanStartRef.current : 0;
@@ -257,7 +333,7 @@ export function FaceScanner({
         frameHeight,
       },
     });
-  }, [landmarker, phase]);
+  }, [landmarker, phase, captureFrameFor]);
 
   // -------------------------------------------------------------------------
   // Inference loop — starts when camera + model are ready.
@@ -297,7 +373,7 @@ export function FaceScanner({
         if (remaining <= 0) {
           clearInterval(id);
           setCountdown(null);
-          scanStartRef.current = Date.now();
+          scanStartRef.current = performance.now();
           dispatch({ type: "COUNTDOWN_FINISHED" });
           setPhase("active");
         } else {
@@ -312,143 +388,222 @@ export function FaceScanner({
   }, [phase, stream, landmarker, faceCentered, countdown]);
 
   // -------------------------------------------------------------------------
-  // Upload + analysis — defined before the recording effect that uses it.
+  // Upload + analysis
   // -------------------------------------------------------------------------
-  const handleUpload = useCallback(
-    async (session: RecordingSession) => {
-      const sid = mediaSessionIdRef.current;
-      if (!sid) {
+  const runUpload = useCallback(async () => {
+    const sid = mediaSessionIdRef.current;
+    if (!sid) {
+      setPhase("error");
+      setCameraError("Scan session was not created.");
+      return;
+    }
+
+    setPhase("uploading");
+    setUploadIndex(0);
+    setUploadFailed(false);
+
+    try {
+      // Still encoding runs off the inference loop; let it settle.
+      await Promise.allSettled(pendingEncodesRef.current);
+
+      const captures = CHALLENGE_SEQUENCE.map((step) => ({
+        step,
+        segment: segmentsRef.current[step],
+        frame: framesRef.current[step],
+      }));
+
+      const incomplete = captures.find((c) => !c.segment || c.segment.blob.size === 0 || !c.frame);
+      if (incomplete) {
         setPhase("error");
-        setCameraError("Scan session was not created.");
-        return;
-      }
-      const blob = session.blob;
-      if (blob.size > MAX_VIDEO_UPLOAD_BYTES) {
-        setPhase("error");
-        setCameraError("The recording is too large to upload. Please try again.");
-        return;
-      }
-      if (!bestFrameRef.current) {
-        setPhase("error");
-        setCameraError("No best frame was captured. Please try again.");
+        setCameraError(
+          `The ${incomplete.step.toLowerCase()} capture did not record correctly. Please try again.`
+        );
         return;
       }
 
-      setPhase("uploading");
-      setUploadIndex(0);
-      setUploadFailed(false);
+      const oversized = captures.find((c) => (c.segment?.blob.size ?? 0) > MAX_VIDEO_UPLOAD_BYTES);
+      if (oversized) {
+        setPhase("error");
+        setCameraError("A recorded clip is too large to upload. Please try again.");
+        return;
+      }
 
-      try {
-        dispatch({ type: "UPLOAD_START" });
-        setUploadIndex(1);
-        const urlsRes = await scanApi.uploadUrls(sid, {
+      dispatch({ type: "UPLOAD_START" });
+      setUploadIndex(1);
+
+      const urlsRes = await scanApi.uploadUrls(sid, {
+        captures: captures.map((c) => ({
+          step: c.step,
           video: {
-            mimeType: blob.type,
-            byteSize: blob.size,
-            extension: session.extension,
+            mimeType: c.segment!.mimeType,
+            byteSize: c.segment!.blob.size,
+            extension: c.segment!.extension,
           },
-          bestFrame: {
-            mimeType: "image/jpeg",
-            byteSize: bestFrameRef.current.blob.size,
-            extension: "jpg",
-          },
-          thumbnail: null,
-        });
+          frame: { mimeType: "image/jpeg", byteSize: c.frame!.blob.size, extension: "jpg" },
+        })),
+      });
 
-        if (!urlsRes.success) {
-          throw new Error(urlsRes.error.message);
-        }
+      if (!urlsRes.success) throw new Error(urlsRes.error.message);
 
-        setUploadIndex(2);
-        await uploadAll({
-          video: { blob, presign: urlsRes.data.video },
-          bestFrame: { blob: bestFrameRef.current.blob, presign: urlsRes.data.bestFrame },
-        });
+      setUploadIndex(2);
 
-        setUploadIndex(4);
-        dispatch({ type: "ANALYZE_START" });
+      const bundle: CaptureUpload[] = captures.map((c) => {
+        const slot = urlsRes.data.captures.find((s) => s.step === c.step);
+        if (!slot) throw new Error(`No upload slot returned for ${c.step}.`);
+        return {
+          step: c.step,
+          video: { blob: c.segment!.blob, presign: slot.video },
+          frame: { blob: c.frame!.blob, presign: slot.frame },
+        };
+      });
 
-        const durationMs = scanStartRef.current ? Math.round(performance.now() - scanStartRef.current) : 0;
+      await uploadCaptures(bundle);
 
-        const completeRes = await scanApi.complete(sid, {
-          durationMs,
-          video: {
-            objectKey: urlsRes.data.video.objectKey,
-            mimeType: blob.type,
-            byteSize: blob.size,
-          },
-          bestFrame: {
-            objectKey: urlsRes.data.bestFrame.objectKey,
-            mimeType: "image/jpeg",
-            byteSize: bestFrameRef.current.blob.size,
-            width: bestFrameRef.current.width,
-            height: bestFrameRef.current.height,
-          },
-          steps: stateRef.current.steps,
-          qualitySummary: stateRef.current.qualitySummary,
-        });
+      setUploadIndex(3);
+      dispatch({ type: "ANALYZE_START" });
 
-        if (!completeRes.success) {
-          throw new Error(completeRes.error.message);
-        }
+      const durationMs = scanStartRef.current
+        ? Math.round(performance.now() - scanStartRef.current)
+        : 0;
 
-        setUploadIndex(5);
-        dispatch({ type: "COMPLETE" });
-        setPhase("done");
-        if (!resultSentRef.current) {
-          resultSentRef.current = true;
-          onResult?.({
-            ageRange: completeRes.data.ageRange,
-            sessionId: sid,
-          });
-        }
-      } catch (err) {
-        console.error(err);
-        setUploadFailed(true);
-        setPhase("error");
+      const completeRes = await scanApi.complete(sid, {
+        durationMs,
+        analysisStep: "CENTER",
+        captures: bundle.map((b) => {
+          const source = captures.find((c) => c.step === b.step)!;
+          return {
+            step: b.step,
+            video: {
+              objectKey: b.video.presign.objectKey,
+              mimeType: source.segment!.mimeType,
+              byteSize: source.segment!.blob.size,
+              durationMs: source.segment!.durationMs,
+            },
+            frame: {
+              objectKey: b.frame.presign.objectKey,
+              mimeType: "image/jpeg",
+              byteSize: source.frame!.blob.size,
+              width: source.frame!.width,
+              height: source.frame!.height,
+            },
+          };
+        }),
+        steps: stateRef.current.steps.map((s) => ({
+          step: s.step,
+          stepOrder: s.stepOrder,
+          passed: s.passed,
+          holdMs: s.holdMs,
+          yaw: s.representativeYaw,
+          pitch: s.representativePitch,
+          roll: s.representativeRoll,
+          frameTimestampMs: Math.max(0, Math.round(s.frameTimestampMs)),
+        })),
+        qualitySummary: {
+          minimumFaceCount: stateRef.current.qualitySummary.minimumFaceCount,
+          maximumFaceCount: stateRef.current.qualitySummary.maximumFaceCount,
+          averageBrightness: clamp01(stateRef.current.qualitySummary.averageBrightness),
+          bestSharpness: clamp01(stateRef.current.qualitySummary.bestSharpness),
+        },
+      });
+
+      if (!completeRes.success) throw new Error(completeRes.error.message);
+
+      setUploadIndex(4);
+      dispatch({ type: "COMPLETE" });
+      setPhase("done");
+      if (!resultSentRef.current) {
+        resultSentRef.current = true;
+        onResult?.({ ageRange: completeRes.data.ageRange, sessionId: sid });
       }
-    },
-    [onResult]
-  );
+    } catch (err) {
+      console.error(err);
+      setUploadFailed(true);
+      setPhase("error");
+      setCameraError("The scan could not be uploaded. Please try again.");
+    }
+  }, [onResult]);
+
+  /** Fires once every direction has both its segment and its still. */
+  const maybeStartUpload = useCallback(() => {
+    if (uploadStartedRef.current) return;
+    if (stateRef.current.step !== "RECORDING_COMPLETE") return;
+    const ready = CHALLENGE_SEQUENCE.every(
+      (step) => segmentsRef.current[step] && framesRef.current[step]
+    );
+    if (!ready) return;
+    uploadStartedRef.current = true;
+    void runUpload();
+  }, [runUpload]);
 
   // -------------------------------------------------------------------------
-  // Recording: start at CENTER, stop at CENTER_FINAL completion.
+  // Per-direction recording: start on pose lock, stop when the hold completes.
   // -------------------------------------------------------------------------
   useEffect(() => {
-    if (phase === "active" && state.step === "CENTER" && !recorderRef.current && streamRef.current) {
-      try {
-        const { recorder, chunks } = createRecorder(streamRef.current);
-        recorderRef.current = recorder;
-        chunksRef.current = chunks;
-        startRecording(recorder);
-        dispatch({ type: "RECORDING_STARTED" });
-      } catch (err) {
-        console.error(err);
-        // Defer state updates out of the effect body.
-        setTimeout(() => {
-          setCameraError("Recording is not supported in this browser.");
-          setPhase("error");
-        }, 0);
-      }
-    }
+    if (phase !== "active") return;
+    const step = state.currentStep;
+    if (!step || !state.armed) return;
+    if (activeRecorderRef.current) return;
 
-    if (state.step === "RECORDING_COMPLETE" && recorderRef.current) {
-      const rec = recorderRef.current;
-      void stopRecording(rec)
-        .then((session) => {
-          if (session.blob.size === 0) {
-            setPhase("error");
-            setCameraError("The recording was empty. Please try again.");
-            return;
-          }
-          void handleUpload(session);
-        })
-        .catch((err) => {
-          console.error(err);
-          setPhase("error");
+    const activeStream = streamRef.current;
+    if (!activeStream) return;
+
+    try {
+      const rec = startSegmentRecorder(activeStream);
+      activeRecorderRef.current = { step, rec };
+      setRecordingStep(step);
+
+      // Move the session into `recording` once, before any upload URL is asked for.
+      const sid = mediaSessionIdRef.current;
+      if (sid && !recordingAnnouncedRef.current) {
+        recordingAnnouncedRef.current = true;
+        void scanApi.recordingStarted(sid).catch(() => {
+          recordingAnnouncedRef.current = false;
         });
+      }
+    } catch (err) {
+      console.error(err);
+      setTimeout(() => {
+        setCameraError("Recording is not supported in this browser.");
+        setPhase("error");
+      }, 0);
     }
-  }, [phase, state.step, handleUpload]);
+  }, [phase, state.armed, state.currentStep]);
+
+  useEffect(() => {
+    const active = activeRecorderRef.current;
+    if (!active) return;
+    // The direction this recorder belongs to has passed its hold.
+    if (!state.steps.some((s) => s.step === active.step)) return;
+
+    activeRecorderRef.current = null;
+    setRecordingStep(null);
+
+    void active.rec
+      .stop()
+      .then((session) => {
+        segmentsRef.current[active.step] = session;
+        setCapturedSteps((prev) => (prev.includes(active.step) ? prev : [...prev, active.step]));
+        setFlashStep(active.step);
+        maybeStartUpload();
+      })
+      .catch((err) => {
+        console.error(err);
+        setCameraError(`The ${active.step.toLowerCase()} clip could not be saved. Please try again.`);
+        setPhase("error");
+      });
+  }, [state.steps, maybeStartUpload]);
+
+  // The last segment may resolve before the machine reaches RECORDING_COMPLETE.
+  useEffect(() => {
+    if (state.step === "RECORDING_COMPLETE") maybeStartUpload();
+  }, [state.step, maybeStartUpload]);
+
+  // Brief "captured" flash on the step rail.
+  useEffect(() => {
+    if (!flashStep) return;
+    const id = setTimeout(() => setFlashStep(null), 900);
+    return () => clearTimeout(id);
+  }, [flashStep]);
 
   // Timeout watchdog.
   useEffect(() => {
@@ -462,99 +617,168 @@ export function FaceScanner({
   }, [phase]);
 
   // -------------------------------------------------------------------------
-  // Handlers
+  // Lifecycle
   // -------------------------------------------------------------------------
   const cancel = useCallback(() => {
     dispatch({ type: "CANCEL" });
-    if (recorderRef.current && recorderRef.current.state !== "inactive") {
-      recorderRef.current.stop();
-    }
+    activeRecorderRef.current?.rec.abort();
+    activeRecorderRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     setStream(null);
-    setPhase("error");
-  }, []);
+    onExit?.();
+  }, [onExit]);
 
   useEffect(() => {
     const id = setTimeout(() => void startCamera(), 0);
     return () => {
       clearTimeout(id);
+      activeRecorderRef.current?.rec.abort();
+      activeRecorderRef.current = null;
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
   }, [startCamera]);
 
+  const tone: MeshTone = useMemo(() => {
+    if (recordingStep) return "ready";
+    if (qualityMessage && qualityMessage !== "ok") return "warning";
+    return "scanning";
+  }, [recordingStep, qualityMessage]);
+
+  const holdRatio = Math.min(1, state.holdProgressMs / SCAN_CONFIG.requiredHoldMs);
+
   // -------------------------------------------------------------------------
-  // Render
+  // Render — a single full-viewport surface for every phase.
   // -------------------------------------------------------------------------
   if (phase === "error") {
     return (
-      <Card className="w-full max-w-lg">
-        <CardContent className="flex flex-col gap-4 p-6">
-          <p className="font-medium text-red-600">{cameraError ?? "Something went wrong."}</p>
-          <Button onClick={() => window.location.reload()}>Try again</Button>
-        </CardContent>
-      </Card>
+      <ScanShell>
+        <div className="flex flex-1 flex-col items-center justify-center gap-6 px-6 text-center">
+          <p className="font-mono text-xs uppercase tracking-[0.3em] text-rose-400">Scan aborted</p>
+          <p className="max-w-sm text-lg text-white/90">{cameraError ?? "Something went wrong."}</p>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Button
+              onClick={() => window.location.reload()}
+              className="h-12 rounded-full bg-cyan-400 px-8 font-semibold text-slate-950 hover:bg-cyan-300"
+            >
+              Try again
+            </Button>
+            {onExit && (
+              <Button
+                variant="ghost"
+                onClick={onExit}
+                className="h-12 rounded-full px-8 text-white/70 hover:bg-white/10 hover:text-white"
+              >
+                Exit
+              </Button>
+            )}
+          </div>
+        </div>
+      </ScanShell>
     );
   }
 
-  if (phase === "uploading") {
+  if (phase === "uploading" || phase === "done") {
     return (
-      <Card className="w-full max-w-lg">
-        <CardContent className="flex flex-col gap-6 p-6">
-          <UploadProgress current={uploadIndex} failed={uploadFailed} />
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (phase === "done") {
-    return (
-      <Card className="w-full max-w-lg">
-        <CardContent className="flex flex-col gap-4 p-6 text-center">
-          <p className="text-xl font-semibold">Scan complete</p>
-          <p className="text-muted-foreground">
-            Your estimated age range has been saved. You can view the result on the next page.
-          </p>
-        </CardContent>
-      </Card>
+      <ScanShell>
+        <div className="flex flex-1 items-center justify-center px-6">
+          <div className="w-full max-w-md">
+            <UploadProgress current={uploadIndex} failed={uploadFailed} />
+          </div>
+        </div>
+      </ScanShell>
     );
   }
 
   return (
-    <div className="flex w-full max-w-2xl flex-col gap-4">
-      <div className="relative aspect-[4/3] w-full overflow-hidden rounded-2xl bg-black">
+    <ScanShell>
+      {/* Live camera + face structure */}
+      <div className="absolute inset-0">
         <CameraPreview
           stream={stream}
           onVideoReady={(video) => {
             videoRef.current = video;
           }}
         />
-        <FaceGuideOverlay
-          state={qualityMessage === "ok" ? "ready" : qualityMessage ? "error" : "neutral"}
-        />
-        {countdown !== null && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-            <span className="text-6xl font-bold text-white">{Math.ceil(countdown)}</span>
-          </div>
-        )}
+        <div className="pointer-events-none absolute inset-0">
+          <FaceMeshOverlay source={meshFrameRef} tone={tone} />
+        </div>
+        {/* Readability scrim behind the HUD */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-56 bg-gradient-to-b from-slate-950/90 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-72 bg-gradient-to-t from-slate-950/95 via-slate-950/70 to-transparent" />
       </div>
 
-      <div className="flex flex-col items-center gap-3">
+      {/* Top HUD */}
+      <header className="relative z-10 flex items-start justify-between px-5 pt-[max(1rem,env(safe-area-inset-top))]">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-cyan-300/80">
+            Find your skin age
+          </p>
+          <p className="mt-1 text-sm font-medium text-white/70">
+            {phase === "preparing" ? "Calibrating scanner" : "Scan in progress"}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={cancel}
+          aria-label="Exit scan"
+          className="rounded-full border border-white/15 bg-white/5 p-2.5 text-white/80 backdrop-blur transition hover:bg-white/15 hover:text-white"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </header>
+
+      <div className="relative z-10 mt-5 px-5">
         <ScanProgress
           currentIndex={state.stepIndex}
-          holdProgressMs={state.holdProgressMs}
-          requiredHoldMs={SCAN_CONFIG.requiredHoldMs}
+          capturedSteps={capturedSteps}
+          recordingStep={recordingStep}
+          flashStep={flashStep}
+          holdRatio={holdRatio}
         />
-        <DirectionInstruction step={state.currentStep} qualityMessage={qualityMessage ?? undefined} />
-        <QualityMessageView message={qualityMessage} showOk />
-        {phase === "preparing" && landmarkerError && (
-          <p className="text-sm text-red-600">{landmarkerError}</p>
-        )}
-        {phase === "active" && (
-          <Button variant="destructive" onClick={cancel}>
-            Cancel
-          </Button>
-        )}
       </div>
+
+      {/* Countdown takeover */}
+      {countdown !== null && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3">
+            <span className="font-mono text-[11px] uppercase tracking-[0.35em] text-cyan-300">
+              Get ready
+            </span>
+            <span className="text-8xl font-bold tabular-nums text-white drop-shadow-[0_0_25px_rgba(56,189,248,0.6)]">
+              {Math.ceil(countdown)}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom instruction panel */}
+      <footer className="relative z-10 mt-auto px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+        <DirectionInstruction
+          step={state.currentStep}
+          qualityMessage={qualityMessage ?? undefined}
+          recording={recordingStep !== null}
+          holdRatio={holdRatio}
+          preparing={phase === "preparing"}
+        />
+        {landmarkerError && (
+          <p className="mt-3 text-center text-sm text-rose-400">{landmarkerError}</p>
+        )}
+      </footer>
+    </ScanShell>
+  );
+}
+
+/** Full-viewport dark surface shared by every scanner phase. */
+function ScanShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-slate-950 text-white">
+      <div className="scan-grid pointer-events-none absolute inset-0 opacity-[0.18]" aria-hidden="true" />
+      {children}
     </div>
   );
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
 }

@@ -19,16 +19,23 @@ export const createSessionSchema = z.object({
 
 export type CreateSessionInput = z.infer<typeof createSessionSchema>;
 
+export const challengeStepSchema = z.enum(["CENTER", "LEFT", "RIGHT"]);
+
 const assetUploadSchema = z.object({
   mimeType: z.string().min(3).max(100),
   byteSize: z.number().int().min(1),
   extension: z.string().min(1).max(10),
 });
 
-export const uploadUrlsSchema = z.object({
+/** One direction's requested upload slots: its video segment and its frame. */
+const captureUploadSchema = z.object({
+  step: challengeStepSchema,
   video: assetUploadSchema,
-  bestFrame: assetUploadSchema,
-  thumbnail: assetUploadSchema.nullable().optional(),
+  frame: assetUploadSchema,
+});
+
+export const uploadUrlsSchema = z.object({
+  captures: z.array(captureUploadSchema).min(1).max(3),
 });
 
 export type UploadUrlsInput = z.infer<typeof uploadUrlsSchema>;
@@ -38,16 +45,28 @@ const videoObjectSchema = z.object({
   mimeType: z.string().min(3).max(100),
   byteSize: z.number().int().min(1),
   etag: z.string().optional().nullable(),
+  durationMs: z.number().int().min(0).max(60000).optional(),
 });
 
-const bestFrameObjectSchema = videoObjectSchema.extend({
+const frameObjectSchema = z.object({
+  objectKey: z.string().min(1).max(500),
+  mimeType: z.string().min(3).max(100),
+  byteSize: z.number().int().min(1),
+  etag: z.string().optional().nullable(),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
 });
 
+/** One direction's uploaded pair, confirmed by the client after PUT. */
+const captureObjectSchema = z.object({
+  step: challengeStepSchema,
+  video: videoObjectSchema,
+  frame: frameObjectSchema,
+});
+
 const stepSchema = z.object({
-  step: z.enum(["CENTER", "LEFT", "RIGHT", "UP", "CENTER_FINAL"]),
-  stepOrder: z.number().int().min(1).max(5),
+  step: challengeStepSchema,
+  stepOrder: z.number().int().min(1).max(3),
   passed: z.boolean(),
   holdMs: z.number().int().min(0),
   yaw: z.number(),
@@ -65,16 +84,27 @@ export const qualitySummarySchema = z.object({
 
 export const completeScanSchema = z.object({
   durationMs: z.number().int().min(0).max(60000),
-  video: videoObjectSchema,
-  bestFrame: bestFrameObjectSchema,
+  captures: z.array(captureObjectSchema).length(3),
+  /** Which direction's frame is used for age/skin analysis. Must be frontal. */
+  analysisStep: challengeStepSchema.default("CENTER"),
   steps: z.array(stepSchema),
   qualitySummary: qualitySummarySchema,
 });
 
 export type CompleteScanInput = z.infer<typeof completeScanSchema>;
 
-/** The exact allowed challenge sequence. Anything else (incl. DOWN) is rejected. */
-export const REQUIRED_CHALLENGE_SEQUENCE = ["CENTER", "LEFT", "RIGHT", "UP", "CENTER_FINAL"] as const;
+/** The exact allowed challenge sequence. Anything else is rejected. */
+export const REQUIRED_CHALLENGE_SEQUENCE = ["CENTER", "LEFT", "RIGHT"] as const;
+
+/** Every direction must have contributed exactly one video + frame pair. */
+export function hasCaptureForEveryStep(captures: { step: string }[]): boolean {
+  const seen = new Set(captures.map((c) => c.step));
+  return (
+    seen.size === captures.length &&
+    seen.size === REQUIRED_CHALLENGE_SEQUENCE.length &&
+    REQUIRED_CHALLENGE_SEQUENCE.every((s) => seen.has(s))
+  );
+}
 
 export function isRequiredSequence(steps: { step: string; stepOrder: number; passed: boolean }[]): boolean {
   if (steps.length !== REQUIRED_CHALLENGE_SEQUENCE.length) return false;

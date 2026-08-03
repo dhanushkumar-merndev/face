@@ -4,6 +4,7 @@ import {
   uploadUrlsSchema,
   completeScanSchema,
   isRequiredSequence,
+  hasCaptureForEveryStep,
 } from "@/lib/validation/scan";
 
 describe("Zod schemas", () => {
@@ -34,43 +35,107 @@ describe("Zod schemas", () => {
     expect(r.success).toBe(true);
   });
 
-  it("rejects upload URLs with oversized video", () => {
+  it("accepts per-direction upload slots", () => {
     const r = uploadUrlsSchema.safeParse({
-      video: { mimeType: "video/webm", byteSize: 100, extension: "webm" },
-      bestFrame: { mimeType: "image/jpeg", byteSize: 10, extension: "jpg" },
+      captures: ["CENTER", "LEFT", "RIGHT"].map((step) => ({
+        step,
+        video: { mimeType: "video/webm", byteSize: 100, extension: "webm" },
+        frame: { mimeType: "image/jpeg", byteSize: 10, extension: "jpg" },
+      })),
     });
     // Schema is structural; size limits are enforced in the route.
     expect(r.success).toBe(true);
   });
 
-  it("rejects a complete payload whose steps contain DOWN", () => {
-    const steps = [
-      { step: "CENTER", stepOrder: 1, passed: true, holdMs: 700, yaw: 0, pitch: 0, roll: 0, frameTimestampMs: 0 },
-      { step: "LEFT", stepOrder: 2, passed: true, holdMs: 700, yaw: -25, pitch: 0, roll: 0, frameTimestampMs: 0 },
-      { step: "RIGHT", stepOrder: 3, passed: true, holdMs: 700, yaw: 25, pitch: 0, roll: 0, frameTimestampMs: 0 },
-      { step: "UP", stepOrder: 4, passed: true, holdMs: 700, yaw: 0, pitch: -20, roll: 0, frameTimestampMs: 0 },
-      { step: "CENTER_FINAL", stepOrder: 5, passed: true, holdMs: 700, yaw: 0, pitch: 0, roll: 0, frameTimestampMs: 0 },
-    ];
+  it("rejects upload slots for a removed direction", () => {
+    const r = uploadUrlsSchema.safeParse({
+      captures: [
+        {
+          step: "UP",
+          video: { mimeType: "video/webm", byteSize: 100, extension: "webm" },
+          frame: { mimeType: "image/jpeg", byteSize: 10, extension: "jpg" },
+        },
+      ],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  const captures = ["CENTER", "LEFT", "RIGHT"].map((step) => ({
+    step,
+    video: { objectKey: `${step}-v`, mimeType: "video/webm", byteSize: 100 },
+    frame: { objectKey: `${step}-f`, mimeType: "image/jpeg", byteSize: 10, width: 100, height: 100 },
+  }));
+
+  const steps = [
+    { step: "CENTER", stepOrder: 1, passed: true, holdMs: 900, yaw: 0, pitch: 0, roll: 0, frameTimestampMs: 0 },
+    { step: "LEFT", stepOrder: 2, passed: true, holdMs: 900, yaw: -25, pitch: 0, roll: 0, frameTimestampMs: 0 },
+    { step: "RIGHT", stepOrder: 3, passed: true, holdMs: 900, yaw: 25, pitch: 0, roll: 0, frameTimestampMs: 0 },
+  ];
+
+  const qualitySummary = {
+    minimumFaceCount: 1,
+    maximumFaceCount: 1,
+    averageBrightness: 0.5,
+    bestSharpness: 0.8,
+  };
+
+  it("accepts a complete payload with all three captures", () => {
     const r = completeScanSchema.safeParse({
       durationMs: 10000,
-      video: { objectKey: "k", mimeType: "video/webm", byteSize: 100 },
-      bestFrame: { objectKey: "k2", mimeType: "image/jpeg", byteSize: 10, width: 100, height: 100 },
+      captures,
+      analysisStep: "CENTER",
       steps,
-      qualitySummary: { minimumFaceCount: 1, maximumFaceCount: 1, averageBrightness: 0.5, bestSharpness: 0.8 },
+      qualitySummary,
     });
     expect(r.success).toBe(true);
+  });
 
-    // Add a DOWN step — schema rejects it.
-    const bad = completeScanSchema.safeParse({
-      ...(r.success ? r.data : {}),
-      steps: [...steps, { step: "DOWN", stepOrder: 6, passed: true, holdMs: 100, yaw: 0, pitch: 0, roll: 0, frameTimestampMs: 0 }],
+  it("rejects a complete payload missing a direction", () => {
+    const r = completeScanSchema.safeParse({
+      durationMs: 10000,
+      captures: captures.slice(0, 2),
+      analysisStep: "CENTER",
+      steps,
+      qualitySummary,
     });
-    expect(bad.success).toBe(false);
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a complete payload whose steps contain a removed direction", () => {
+    const r = completeScanSchema.safeParse({
+      durationMs: 10000,
+      captures,
+      analysisStep: "CENTER",
+      steps: [
+        ...steps,
+        { step: "UP", stepOrder: 3, passed: true, holdMs: 100, yaw: 0, pitch: -20, roll: 0, frameTimestampMs: 0 },
+      ],
+      qualitySummary,
+    });
+    expect(r.success).toBe(false);
+  });
+});
+
+describe("hasCaptureForEveryStep", () => {
+  it("accepts one capture per direction", () => {
+    expect(
+      hasCaptureForEveryStep([{ step: "CENTER" }, { step: "LEFT" }, { step: "RIGHT" }])
+    ).toBe(true);
+  });
+
+  it("rejects duplicates", () => {
+    expect(
+      hasCaptureForEveryStep([{ step: "CENTER" }, { step: "CENTER" }, { step: "LEFT" }])
+    ).toBe(false);
+  });
+
+  it("rejects a missing direction", () => {
+    expect(hasCaptureForEveryStep([{ step: "CENTER" }, { step: "LEFT" }])).toBe(false);
   });
 });
 
 describe("isRequiredSequence", () => {
-  const valid = ["CENTER", "LEFT", "RIGHT", "UP", "CENTER_FINAL"].map((step, i) => ({
+  const valid = ["CENTER", "LEFT", "RIGHT"].map((step, i) => ({
     step,
     stepOrder: i + 1,
     passed: true,
@@ -81,7 +146,7 @@ describe("isRequiredSequence", () => {
   });
 
   it("rejects a failed step", () => {
-    const bad = valid.map((s, i) => (i === 2 ? { ...s, passed: false } : s));
+    const bad = valid.map((s, i) => (i === 1 ? { ...s, passed: false } : s));
     expect(isRequiredSequence(bad)).toBe(false);
   });
 
@@ -90,12 +155,12 @@ describe("isRequiredSequence", () => {
     expect(isRequiredSequence(bad)).toBe(false);
   });
 
-  it("rejects a DOWN step", () => {
-    const bad = [...valid.slice(0, 4), { step: "DOWN", stepOrder: 5, passed: true }];
+  it("rejects a removed direction", () => {
+    const bad = [...valid.slice(0, 2), { step: "UP", stepOrder: 3, passed: true }];
     expect(isRequiredSequence(bad)).toBe(false);
   });
 
   it("rejects wrong step count", () => {
-    expect(isRequiredSequence(valid.slice(0, 3))).toBe(false);
+    expect(isRequiredSequence(valid.slice(0, 2))).toBe(false);
   });
 });

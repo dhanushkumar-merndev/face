@@ -130,25 +130,11 @@ export function rightCondition(input: StepConditionInput): boolean {
   );
 }
 
-export function upCondition(input: StepConditionInput): boolean {
-  const { pose } = input;
-  // Pitch sign: negative pitch = looking up in the adapter convention.
-  // If calibration shows reversed sign, flip once in pose.ts.
-  return (
-    input.qualityOk &&
-    pose.pitch <= SCAN_CONFIG.upPitchThreshold &&
-    within(pose.yaw, 18) &&
-    within(pose.roll, 15)
-  );
-}
-
 export const STEP_CONDITIONS: Record<
-  "CENTER" | "LEFT" | "RIGHT" | "UP" | "CENTER_FINAL",
+  "CENTER" | "LEFT" | "RIGHT",
   (input: StepConditionInput) => boolean
 > = {
   CENTER: centerCondition,
   LEFT: leftCondition,
   RIGHT: rightCondition,
-  UP: upCondition,
-  CENTER_FINAL: centerCondition,
 };

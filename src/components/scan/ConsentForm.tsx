@@ -68,12 +68,16 @@ export function ConsentForm({
   };
 
   return (
-    <Card className="w-full max-w-lg">
+    <Card className="hud-panel w-full max-w-lg rounded-3xl">
       <CardHeader>
-        <CardTitle>Before you start</CardTitle>
+        <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-cyan-300/80">
+          Mission briefing
+        </p>
+        <CardTitle className="text-2xl">Before you start</CardTitle>
         <CardDescription>
-          We will record a short video selfie and estimate an approximate age range. Read the
-          privacy notice below before continuing.
+          You will record three short clips — looking straight ahead, then left, then right. They
+          are used to estimate an approximate age band and a cosmetic skin-age reading. Skin scoring
+          sends your captured frames to an external AI provider for analysis.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -104,8 +108,8 @@ export function ConsentForm({
               onCheckedChange={toggle("consentGiven")}
             />
             <Label htmlFor="consentGiven" className="font-normal leading-snug">
-              I consent to a short video selfie being recorded and analyzed for an estimated age
-              range.
+              I consent to three short video clips being recorded and analyzed for an estimated age
+              range and a cosmetic skin-age reading.
             </Label>
           </div>
           {errors.consentGiven && <p className="text-sm text-red-600">{errors.consentGiven.message}</p>}
@@ -131,15 +135,16 @@ export function ConsentForm({
               onCheckedChange={toggle("acknowledgeApproximate")}
             />
             <Label htmlFor="acknowledgeApproximate" className="font-normal leading-snug">
-              I acknowledge the age estimate is approximate and may be inaccurate.
+              I acknowledge the results are approximate, are for fun, and are not medical advice or
+              proof of age.
             </Label>
           </div>
           {errors.acknowledgeApproximate && (
             <p className="text-sm text-red-600">{errors.acknowledgeApproximate.message}</p>
           )}
 
-          <Button type="submit" disabled={busy}>
-            Start face scan
+          <Button type="submit" disabled={busy} className="mt-2 h-12 rounded-full font-bold">
+            {busy ? "Starting…" : "Start face scan"}
           </Button>
         </form>
       </CardContent>

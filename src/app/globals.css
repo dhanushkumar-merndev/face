@@ -1,24 +1,27 @@
 @import "tailwindcss";
 
+/* "Find Your Skin Age" runs on a dark arcade-console palette: deep slate
+   backdrop, cyan primary, emerald for success and rose for recording. */
 :root {
-  --background: #ffffff;
-  --foreground: #18181b;
-  --card: #ffffff;
-  --card-foreground: #18181b;
-  --muted: #f4f4f5;
-  --muted-foreground: #71717a;
-  --border: #e4e4e7;
-  --input: #e4e4e7;
-  --primary: #18181b;
-  --primary-foreground: #fafafa;
-  --secondary: #f4f4f5;
-  --secondary-foreground: #18181b;
-  --accent: #f4f4f5;
-  --accent-foreground: #18181b;
-  --destructive: #dc2626;
-  --destructive-foreground: #fafafa;
-  --ring: #18181b;
-  --radius: 0.75rem;
+  --background: #020617;
+  --foreground: #e8eefb;
+  --card: #0b1222;
+  --card-foreground: #e8eefb;
+  --muted: #111a2e;
+  --muted-foreground: #93a4c3;
+  --border: #1e293b;
+  --input: #1e293b;
+  --primary: #22d3ee;
+  --primary-foreground: #04121b;
+  --secondary: #141e33;
+  --secondary-foreground: #e8eefb;
+  --accent: #172135;
+  --accent-foreground: #e8eefb;
+  --destructive: #f43f5e;
+  --destructive-foreground: #fff1f3;
+  --success: #34d399;
+  --ring: #22d3ee;
+  --radius: 0.85rem;
 }
 
 @theme inline {
@@ -38,6 +41,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
   --color-ring: var(--ring);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -56,7 +60,72 @@
     background: var(--background);
     color: var(--foreground);
     font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Arcade HUD utilities
+   --------------------------------------------------------------------------- */
+
+/* Faint technical grid used behind the scanner and hero sections. */
+.scan-grid {
+  background-image:
+    linear-gradient(to right, rgba(34, 211, 238, 0.12) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(34, 211, 238, 0.12) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 78%);
+}
+
+/* Glass panel used by HUD cards and result tiles. */
+.hud-panel {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(16px);
+}
+
+@keyframes hud-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-hud-rise {
+  animation: hud-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes score-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  60% {
+    transform: scale(1.04);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-score-pop {
+  animation: score-pop 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes meter-fill {
+  from {
+    width: 0%;
+  }
+}
+
+.animate-meter {
+  animation: meter-fill 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 /* Respect reduced motion for decorative animation. Functional directional

@@ -4,9 +4,9 @@
  */
 
 export const SCAN_CONFIG = {
-  maxDurationMs: 25_000,
+  maxDurationMs: 45_000,
   countdownMs: 3_000,
-  requiredHoldMs: 650,
+  requiredHoldMs: 900,
   minimumStableFrames: 8,
   faceConfidenceMin: 0.9,
   centerYawAbsMax: 12,
@@ -14,19 +14,20 @@ export const SCAN_CONFIG = {
   centerRollAbsMax: 12,
   leftYawMax: -20,
   rightYawMin: 20,
-  upPitchThreshold: -15,
   faceAreaMinRatio: 0.12,
   faceAreaMaxRatio: 0.58,
   maxCenterOffsetRatio: 0.18,
   lostFaceGraceMs: 400,
+  /** Pause after a direction is captured, before the next one is shown. */
+  stepTransitionMs: 900,
 } as const;
 
 /** Controlled inference rate: ~15 FPS. */
 export const TARGET_INFERENCE_INTERVAL_MS = 66;
 
-/** Max recording duration and upload size (bytes). */
-export const MAX_RECORDING_DURATION_MS = 25_000;
-export const MAX_VIDEO_UPLOAD_BYTES = 30 * 1024 * 1024; // 30 MB
+/** Max duration of the whole scan and per-segment upload size (bytes). */
+export const MAX_RECORDING_DURATION_MS = 45_000;
+export const MAX_VIDEO_UPLOAD_BYTES = 30 * 1024 * 1024; // 30 MB per segment
 
 /** Best-frame capture settings. */
 export const BEST_FRAME_JPEG_QUALITY = 0.9;
@@ -73,15 +74,31 @@ export const QUALITY_MESSAGE_TEXT: Record<QualityMessage, string> = {
 
 export type LivenessMode = "CUSTOM_CHALLENGE" | "AWS_FACE_LIVENESS";
 
-export const CHALLENGE_SEQUENCE = ["CENTER", "LEFT", "RIGHT", "UP", "CENTER_FINAL"] as const;
+/**
+ * The guided capture sequence. Each direction records its own short video
+ * segment and its own still frame: the segment starts when the user reaches
+ * the pose and stops when the hold completes, then the next direction is shown.
+ */
+export const CHALLENGE_SEQUENCE = ["CENTER", "LEFT", "RIGHT"] as const;
 
-export const STEP_INSTRUCTION_TEXT: Record<
-  "CENTER" | "LEFT" | "RIGHT" | "UP" | "CENTER_FINAL",
-  string
-> = {
+export const CHALLENGE_VERSION = "center-left-right-v2";
+
+export const STEP_INSTRUCTION_TEXT: Record<"CENTER" | "LEFT" | "RIGHT", string> = {
   CENTER: "Look straight at the camera",
-  LEFT: "Turn your face slowly to the left",
-  RIGHT: "Turn your face slowly to the right",
-  UP: "Look upward slowly",
-  CENTER_FINAL: "Return to the center",
+  LEFT: "Slowly turn your face to the left",
+  RIGHT: "Slowly turn your face to the right",
+};
+
+/** Short label used in compact HUD chips. */
+export const STEP_SHORT_LABEL: Record<"CENTER" | "LEFT" | "RIGHT", string> = {
+  CENTER: "Center",
+  LEFT: "Left",
+  RIGHT: "Right",
+};
+
+/** Helper copy shown under the instruction while a direction is pending. */
+export const STEP_HINT_TEXT: Record<"CENTER" | "LEFT" | "RIGHT", string> = {
+  CENTER: "Keep your head upright and fill the outline",
+  LEFT: "Turn until your right cheek faces the camera",
+  RIGHT: "Turn until your left cheek faces the camera",
 };

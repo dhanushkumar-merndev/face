@@ -21,24 +21,38 @@ export async function POST(
   const { sessionId } = await params;
   const supabase = getSupabaseAdmin();
 
-  const { data: asset } = await supabase
+  const { data: assets } = await supabase
     .from("scan_assets")
-    .select("object_key, kind")
+    .select("object_key, step")
     .eq("session_id", sessionId)
-    .eq("kind", "video")
-    .maybeSingle();
+    .eq("kind", "video");
 
-  if (!asset) return fail("not_found", "No video asset found for this scan.", 404);
+  if (!assets || assets.length === 0) {
+    return fail("not_found", "No video asset found for this scan.", 404);
+  }
+
+  // One clip per direction; keep them in capture order.
+  const order = ["CENTER", "LEFT", "RIGHT"];
+  const sorted = [...assets].sort(
+    (a, b) => order.indexOf(a.step ?? "CENTER") - order.indexOf(b.step ?? "CENTER")
+  );
 
   try {
-    const url = await createPlaybackUrl(asset.object_key, PLAYBACK_TTL);
+    const clips = await Promise.all(
+      sorted.map(async (asset) => ({
+        step: (asset.step ?? "CENTER") as string,
+        url: await createPlaybackUrl(asset.object_key, PLAYBACK_TTL),
+      }))
+    );
+
     await supabase.from("scan_audit_events").insert({
       session_id: sessionId,
       actor_user_id: admin.userId,
       event_type: "video_playback_requested",
-      event_data: {},
+      event_data: { clips: clips.length },
     });
-    return ok({ url, expiresIn: PLAYBACK_TTL });
+
+    return ok({ clips, url: clips[0].url, expiresIn: PLAYBACK_TTL });
   } catch (err) {
     logger.error("playback_url_failed", { sessionId, error: (err as Error).message });
     return internalError("Could not generate a playback URL.");

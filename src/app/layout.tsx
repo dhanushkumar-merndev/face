@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -14,10 +14,19 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Age Range Scan",
-    template: "%s — Age Range Scan",
+    default: "Find Your Skin Age",
+    template: "%s — Find Your Skin Age",
   },
-  description: "A privacy-first face scan that estimates an approximate age range.",
+  description:
+    "A 20-second face scan that maps your face structure, reads your skin and reveals how old it looks.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#020617",
+  // The scanner is a full-viewport surface; keep it pinned on mobile.
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

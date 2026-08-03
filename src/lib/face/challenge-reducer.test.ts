@@ -65,29 +65,22 @@ describe("challenge reducer — hold logic", () => {
     expect(state.stableFrames).toBe(0);
   });
 
-  it("never contains a DOWN step anywhere", () => {
+  it("walks CENTER -> LEFT -> RIGHT and finishes", () => {
     let state = { ...initialState };
     state = reducer(state, { type: "COUNTDOWN_FINISHED" });
     const seen = new Set<string>();
     seen.add(state.currentStep as string);
 
-    // Walk through the whole sequence with perfect poses.
-    const seq = ["CENTER", "LEFT", "RIGHT", "UP", "CENTER_FINAL"];
+    const seq = ["CENTER", "LEFT", "RIGHT"];
     let t = 0;
     for (const expected of seq) {
-      // Step should start.
-      if (state.currentStep !== expected) {
-        // Might already have advanced; drive it with a matching pose.
-      }
-      // Give each step 10 frames of 100ms.
       const pose: HeadPose =
         expected === "LEFT"
           ? { yaw: -25, pitch: 0, roll: 0 }
           : expected === "RIGHT"
             ? { yaw: 25, pitch: 0, roll: 0 }
-            : expected === "UP"
-              ? { yaw: 0, pitch: -20, roll: 0 }
-              : { yaw: 0, pitch: 0, roll: 0 };
+            : { yaw: 0, pitch: 0, roll: 0 };
+      // Give each step 10 frames of 100ms.
       for (let i = 0; i < 10; i++) {
         t += 100;
         state = reducer(state, framePayload(pose, t));
@@ -96,11 +89,34 @@ describe("challenge reducer — hold logic", () => {
     }
 
     expect(state.step).toBe("RECORDING_COMPLETE");
-    expect(seen.has("DOWN")).toBe(false);
+    expect(state.steps.map((s) => s.step)).toEqual(["CENTER", "LEFT", "RIGHT"]);
     expect(seen.has("LEFT")).toBe(true);
     expect(seen.has("RIGHT")).toBe(true);
-    expect(seen.has("UP")).toBe(true);
-    expect(seen.has("CENTER_FINAL")).toBe(true);
+    // The removed directions must not appear anywhere.
+    expect(seen.has("UP")).toBe(false);
+    expect(seen.has("CENTER_FINAL")).toBe(false);
+    expect(seen.has("DOWN")).toBe(false);
+  });
+
+  it("arms on the first matching frame and disarms for the next direction", () => {
+    let state = { ...initialState };
+    state = reducer(state, { type: "COUNTDOWN_FINISHED" });
+    expect(state.armed).toBe(false);
+
+    // One good CENTER frame is enough to start that direction's recording.
+    state = reducer(state, framePayload({ yaw: 0, pitch: 0, roll: 0 }, 100));
+    expect(state.armed).toBe(true);
+
+    // Arming is sticky across a brief wobble so the clip is not chopped up.
+    state = reducer(state, framePayload({ yaw: 40, pitch: 0, roll: 0 }, 200));
+    expect(state.armed).toBe(true);
+
+    // Completing CENTER hands over to LEFT, which starts disarmed.
+    for (let t = 300; t <= 1400; t += 100) {
+      state = reducer(state, framePayload({ yaw: 0, pitch: 0, roll: 0 }, t));
+    }
+    expect(state.currentStep).toBe("LEFT");
+    expect(state.armed).toBe(false);
   });
 
   it("handles cancel", () => {

@@ -18,7 +18,7 @@ export async function GET(
   const { data, error } = await supabase
     .from("scan_sessions")
     .select(
-      "status, age_low, age_high, completed_at, failure_code, failure_message, custom_challenge_passed"
+      "status, age_low, age_high, completed_at, failure_code, failure_message, custom_challenge_passed, skin_status, skin_age, skin_analysis"
     )
     .eq("id", sessionId)
     .single();
@@ -34,6 +34,9 @@ export async function GET(
       data.status === "completed" && data.age_low !== null && data.age_high !== null
         ? { low: data.age_low, high: data.age_high }
         : null,
+    skinStatus: data.skin_status ?? "skipped",
+    skinAge: data.skin_age ?? null,
+    skin: data.skin_status === "completed" ? (data.skin_analysis ?? null) : null,
     completedAt: data.completed_at ?? null,
     failureCode: data.failure_code,
     failureMessage: data.failure_message,

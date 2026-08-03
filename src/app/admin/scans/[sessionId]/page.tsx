@@ -29,9 +29,21 @@ type ScanStepRow = {
 type ScanAssetRow = {
   id: string;
   kind: string;
+  step: string | null;
   object_key: string;
   byte_size: number | null;
   mime_type: string;
+};
+
+type SkinAnalysisRow = {
+  skinAge?: number;
+  confidence?: number;
+  skinType?: string;
+  scores?: Record<string, number>;
+  concerns?: string[];
+  highlights?: string[];
+  tips?: string[];
+  summary?: string;
 };
 
 type ScanAuditRow = {
@@ -51,6 +63,11 @@ type ScanDetail = {
   retention_until: string | null;
   failure_code: string | null;
   failure_message: string | null;
+  skin_age: number | null;
+  skin_status: string | null;
+  skin_provider: string | null;
+  skin_model: string | null;
+  skin_analysis: SkinAnalysisRow | null;
   scan_steps: ScanStepRow[];
   scan_assets: ScanAssetRow[];
   scan_audit_events: ScanAuditRow[];
@@ -108,14 +125,23 @@ export default async function AdminScanDetailPage({
             ) : (
               <>
                 <PrivateVideoPlayer sessionId={sessionId} />
-                {/* The best frame is served through a short-lived signed redirect. */}
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={`/api/admin/scans/${sessionId}/best-frame`}
-                  alt="Best frontal frame"
-                  className="w-full max-w-xs rounded-lg border"
-                  loading="lazy"
-                />
+                {/* Frames are served through short-lived signed redirects. */}
+                <div className="grid grid-cols-3 gap-2">
+                  {["CENTER", "LEFT", "RIGHT"].map((step) => (
+                    <figure key={step} className="flex flex-col gap-1">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={`/api/admin/scans/${sessionId}/best-frame?step=${step}`}
+                        alt={`${step} capture frame`}
+                        className="aspect-square w-full rounded-lg border object-cover"
+                        loading="lazy"
+                      />
+                      <figcaption className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                        {step}
+                      </figcaption>
+                    </figure>
+                  ))}
+                </div>
               </>
             )}
           </CardContent>
@@ -152,6 +178,34 @@ export default async function AdminScanDetailPage({
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-base">Skin analysis</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 text-sm">
+          <p>
+            Status: <strong>{detail.skin_status ?? "—"}</strong>
+            {detail.skin_provider ? ` · ${detail.skin_provider}` : ""}
+            {detail.skin_model ? ` (${detail.skin_model})` : ""}
+          </p>
+          <p>
+            Skin age: <strong>{detail.skin_age ?? "—"}</strong>
+          </p>
+          {detail.skin_analysis?.summary && (
+            <p className="text-muted-foreground">{detail.skin_analysis.summary}</p>
+          )}
+          {detail.skin_analysis?.scores && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {Object.entries(detail.skin_analysis.scores).map(([key, value]) => (
+                <span key={key} className="rounded-md border px-2 py-1 text-xs">
+                  {key}: {value}
+                </span>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle className="text-base">Direction steps</CardTitle>
         </CardHeader>
         <CardContent>
@@ -180,7 +234,9 @@ export default async function AdminScanDetailPage({
           <div className="flex flex-col gap-1 text-xs text-muted-foreground">
             {(detail.scan_assets ?? []).map((asset) => (
               <p key={asset.id}>
-                {asset.kind}: {asset.object_key} ({asset.byte_size} bytes, {asset.mime_type})
+                {asset.kind}
+                {asset.step ? ` [${asset.step}]` : ""}: {asset.object_key} ({asset.byte_size} bytes,{" "}
+                {asset.mime_type})
               </p>
             ))}
             {(detail.scan_assets ?? []).length === 0 && <p>No objects recorded.</p>}

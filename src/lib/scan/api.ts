@@ -1,4 +1,4 @@
-import type { StepResult } from "@/lib/face/types";
+import type { ChallengeStep } from "@/lib/face/types";
 
 export type ApiSuccess<T> = { success: true; data: T };
 export type ApiFailure = {
@@ -7,7 +7,29 @@ export type ApiFailure = {
 };
 export type ApiResult<T> = ApiSuccess<T> | ApiFailure;
 
-export type ChallengeSequence = ["CENTER", "LEFT", "RIGHT", "UP", "CENTER_FINAL"];
+export type ChallengeSequence = ["CENTER", "LEFT", "RIGHT"];
+
+/** Skin read-out returned by the Groq vision pass. */
+export interface SkinAnalysisPayload {
+  skinAge: number;
+  confidence: number;
+  skinType: "dry" | "oily" | "combination" | "normal" | "sensitive" | "unknown";
+  scores: {
+    hydration: number;
+    texture: number;
+    evenness: number;
+    radiance: number;
+    firmness: number;
+  };
+  concerns: string[];
+  highlights: string[];
+  tips: string[];
+  summary: string;
+  provider?: string;
+  model?: string;
+}
+
+export type SkinStatus = "pending" | "completed" | "failed" | "skipped";
 
 export interface CreateSessionInput {
   subjectName?: string;
@@ -24,22 +46,44 @@ export interface CreateSessionResult {
   maxDurationMs: number;
 }
 
+export interface AssetUploadRequest {
+  mimeType: string;
+  byteSize: number;
+  extension: string;
+}
+
+/** Upload slots requested for one direction. */
+export interface CaptureUploadRequest {
+  step: ChallengeStep;
+  video: AssetUploadRequest;
+  frame: AssetUploadRequest;
+}
+
 export interface UploadUrlsInput {
-  video: { mimeType: string; byteSize: number; extension: string };
-  bestFrame: { mimeType: string; byteSize: number; extension: string };
-  thumbnail?: { mimeType: string; byteSize: number; extension: string } | null;
+  captures: CaptureUploadRequest[];
+}
+
+export interface PresignedSlot {
+  url: string;
+  objectKey: string;
+  headers: Record<string, string>;
 }
 
 export interface UploadUrlsResult {
-  video: { url: string; objectKey: string; headers: Record<string, string> };
-  bestFrame: { url: string; objectKey: string; headers: Record<string, string> };
-  thumbnail?: { url: string; objectKey: string; headers: Record<string, string> } | null;
+  captures: Array<{ step: ChallengeStep; video: PresignedSlot; frame: PresignedSlot }>;
 }
 
-export interface CompleteScanInput {
-  durationMs: number;
-  video: { objectKey: string; mimeType: string; byteSize: number; etag?: string };
-  bestFrame: {
+/** One direction's uploaded pair, confirmed back to the server. */
+export interface CaptureCompleteInput {
+  step: ChallengeStep;
+  video: {
+    objectKey: string;
+    mimeType: string;
+    byteSize: number;
+    etag?: string;
+    durationMs?: number;
+  };
+  frame: {
     objectKey: string;
     mimeType: string;
     byteSize: number;
@@ -47,7 +91,28 @@ export interface CompleteScanInput {
     width: number;
     height: number;
   };
-  steps: StepResult[];
+}
+
+/**
+ * Wire shape for a completed direction. Note the flattened pose keys — the
+ * in-memory `StepResult` names them `representativeYaw` etc.
+ */
+export interface StepResultPayload {
+  step: ChallengeStep;
+  stepOrder: number;
+  passed: boolean;
+  holdMs: number;
+  yaw: number;
+  pitch: number;
+  roll: number;
+  frameTimestampMs: number;
+}
+
+export interface CompleteScanInput {
+  durationMs: number;
+  captures: CaptureCompleteInput[];
+  analysisStep: ChallengeStep;
+  steps: StepResultPayload[];
   qualitySummary: {
     minimumFaceCount: number;
     maximumFaceCount: number;
@@ -60,12 +125,16 @@ export interface CompleteScanResult {
   sessionId: string;
   status: string;
   ageRange: { low: number; high: number } | null;
+  skin: SkinAnalysisPayload | null;
   completedAt: string | null;
 }
 
 export interface ScanStatusResult {
   status: string;
   ageRange: { low: number; high: number } | null;
+  skinStatus: SkinStatus;
+  skinAge: number | null;
+  skin: SkinAnalysisPayload | null;
   completedAt: string | null;
   failureCode?: string | null;
   failureMessage?: string | null;
