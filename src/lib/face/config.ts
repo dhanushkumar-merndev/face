@@ -4,29 +4,29 @@
  */
 
 export const SCAN_CONFIG = {
-  maxDurationMs: 45_000,
+  maxDurationMs: 60_000,
   countdownMs: 3_000,
-  requiredHoldMs: 900,
-  minimumStableFrames: 8,
-  faceConfidenceMin: 0.9,
-  centerYawAbsMax: 12,
-  centerPitchAbsMax: 10,
-  centerRollAbsMax: 12,
-  leftYawMax: -20,
-  rightYawMin: 20,
-  faceAreaMinRatio: 0.12,
-  faceAreaMaxRatio: 0.58,
-  maxCenterOffsetRatio: 0.25,
+  requiredHoldMs: 600,
+  minimumStableFrames: 6,
+  faceConfidenceMin: 0.5,
+  centerYawAbsMax: 14,
+  centerPitchAbsMax: 14,
+  centerRollAbsMax: 14,
+  leftYawMax: -14,
+  rightYawMin: 14,
+  faceAreaMinRatio: 0.04,
+  faceAreaMaxRatio: 0.70,
+  maxCenterOffsetRatio: 0.35,
   lostFaceGraceMs: 400,
   /** Pause after a direction is captured, before the next one is shown. */
-  stepTransitionMs: 900,
+  stepTransitionMs: 800,
 } as const;
 
 /** Controlled inference rate: ~15 FPS. */
 export const TARGET_INFERENCE_INTERVAL_MS = 66;
 
 /** Max duration of the whole scan and per-segment upload size (bytes). */
-export const MAX_RECORDING_DURATION_MS = 45_000;
+export const MAX_RECORDING_DURATION_MS = 60_000;
 export const MAX_VIDEO_UPLOAD_BYTES = 30 * 1024 * 1024; // 30 MB per segment
 
 /** Best-frame capture settings. */

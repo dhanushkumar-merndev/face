@@ -346,10 +346,6 @@ export function FaceScanner({
         qualityMessage = "hold_steady";
       } else {
         // Glasses / obstruction detection via face blendshapes.
-        // When glasses are present, eyeSquint values are elevated while
-        // eyeBlink values stay low (lenses prevent the eyelid from closing
-        // naturally). We also check for specular glare hotspots in the
-        // eye-bridge region of the frame.
         const blendshapes = result.faceBlendshapes?.[0]?.categories;
         if (blendshapes) {
           const get = (name: string) =>
@@ -360,38 +356,11 @@ export function FaceScanner({
           const blinkL = get("eyeBlinkLeft");
           const blinkR = get("eyeBlinkRight");
 
-          // Glasses cause persistent squinting with low blink — natural squinting
-          // also raises the blink score, so the gap is diagnostic.
           const avgSquint = (squintL + squintR) / 2;
           const avgBlink = (blinkL + blinkR) / 2;
-          const glassesLikely = avgSquint > 0.35 && avgBlink < 0.15;
+          const glassesLikely = avgSquint > 0.45 && avgBlink < 0.10;
 
-          // Eye-bridge glare check: sample the nose-bridge region for
-          // specular highlights that indicate reflective surfaces (glasses).
-          let glareDetected = false;
-          if (ctx && lm0.length > 168) {
-            // MediaPipe landmark 6 = nose bridge between eyes
-            const bridge = lm0[6];
-            const sampleX = Math.round(bridge.x * targetW);
-            const sampleY = Math.round(bridge.y * targetH);
-            const radius = 4;
-            const sx = Math.max(0, sampleX - radius);
-            const sy = Math.max(0, sampleY - radius);
-            const sw = Math.min(radius * 2, targetW - sx);
-            const sh = Math.min(radius * 2, targetH - sy);
-            if (sw > 0 && sh > 0) {
-              const patch = ctx.getImageData(sx, sy, sw, sh);
-              let hotPixels = 0;
-              for (let i = 0; i < patch.data.length; i += 4) {
-                const maxC = Math.max(patch.data[i], patch.data[i + 1], patch.data[i + 2]);
-                if (maxC > 240) hotPixels++;
-              }
-              const hotRatio = hotPixels / (patch.data.length / 4);
-              if (hotRatio > 0.35) glareDetected = true;
-            }
-          }
-
-          if (glassesLikely || glareDetected) {
+          if (glassesLikely) {
             qualityMessage = "obstruction_detected";
           }
         }

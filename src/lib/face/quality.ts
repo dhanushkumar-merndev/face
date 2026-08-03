@@ -111,22 +111,21 @@ export function centerCondition(input: StepConditionInput): boolean {
 
 export function leftCondition(input: StepConditionInput): boolean {
   const { pose } = input;
-  // Physical left turn; yaw convention corrected once in the pose adapter.
   return (
-    input.qualityOk &&
+    input.faceCount === 1 &&
     pose.yaw <= SCAN_CONFIG.leftYawMax &&
-    within(pose.pitch, 15) &&
-    within(pose.roll, 15)
+    within(pose.pitch, 25) &&
+    within(pose.roll, 25)
   );
 }
 
 export function rightCondition(input: StepConditionInput): boolean {
   const { pose } = input;
   return (
-    input.qualityOk &&
+    input.faceCount === 1 &&
     pose.yaw >= SCAN_CONFIG.rightYawMin &&
-    within(pose.pitch, 15) &&
-    within(pose.roll, 15)
+    within(pose.pitch, 25) &&
+    within(pose.roll, 25)
   );
 }
 
