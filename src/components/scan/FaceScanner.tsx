@@ -43,6 +43,12 @@ const EMPTY_SCORES: Record<ChallengeStep, number> = { CENTER: 0, LEFT: 0, RIGHT:
 /** At most one full-resolution still encode per this interval, per direction. */
 const CAPTURE_THROTTLE_MS = 140;
 
+/**
+ * Grace period after the last clip for outstanding still encodes to land before
+ * the recovery pass steps in. Long enough that a slow phone finishes on its own.
+ */
+const FRAME_RECOVERY_GRACE_MS = 2500;
+
 export function FaceScanner({
   sessionId,
   onResult,
@@ -83,6 +89,8 @@ export function FaceScanner({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const meshFrameRef = useRef<MeshFrame | null>(null);
+  /** Most recent detected face, used to crop a fallback still. */
+  const lastFaceRef = useRef<FaceInfo | null>(null);
 
   // Readiness has to be state, not just the ref: the inference loop cannot
   // start until the video element exists, and a ref assignment does not
@@ -258,6 +266,47 @@ export function FaceScanner({
     []
   );
 
+  /**
+   * Last-resort still for a direction that finished its hold without one.
+   *
+   * The per-direction still is captured opportunistically, only from frames
+   * that satisfy STEP_CONDITIONS — which includes `qualityOk`. Turning the head
+   * is exactly when quality drops, so on a phone a whole hold window can pass
+   * with every frame rejected for motion blur. The clip still records and the
+   * step still ticks green, but no still is ever encoded, and `maybeStartUpload`
+   * then waits on a frame that will never arrive until the watchdog reports a
+   * bogus "scan took too long".
+   *
+   * Quality is deliberately not consulted here: a slightly soft frame is worth
+   * far more than a dead scan.
+   */
+  const captureFallbackFrame = useCallback((step: ChallengeStep): Promise<void> => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2) return Promise.resolve();
+
+    try {
+      const original = loadImageFromVideo(video);
+      const face = lastFaceRef.current;
+      // Crop to the last known face when there is one; otherwise keep the full
+      // frame, which analysis can still work with.
+      const canvas = face ? cropFaceCanvas(original, face.box) : original;
+      return canvasToJpeg(canvas)
+        .then((blob) => {
+          if (!framesRef.current[step]) {
+            framesRef.current[step] = {
+              blob,
+              width: canvas.width,
+              height: canvas.height,
+              score: 0,
+            };
+          }
+        })
+        .catch(() => {});
+    } catch {
+      return Promise.resolve();
+    }
+  }, []);
+
   // -------------------------------------------------------------------------
   // runInference — defined before the loop that uses it.
   // -------------------------------------------------------------------------
@@ -330,6 +379,7 @@ export function FaceScanner({
         box,
         landmarks: lm0.map((p) => ({ x: p.x, y: p.y })),
       };
+      lastFaceRef.current = face;
 
       // Exposure and blur are sampled from the face region only. Measuring the
       // whole frame made desktop webcams unusable: a window or lamp behind the
@@ -722,10 +772,15 @@ export function FaceScanner({
 
     void active.rec
       .stop()
-      .then((session) => {
+      .then(async (session) => {
         segmentsRef.current[active.step] = session;
         setCapturedSteps((prev) => (prev.includes(active.step) ? prev : [...prev, active.step]));
         setFlashStep(active.step);
+        // This direction is done, so if the hold never yielded a usable still,
+        // take one now — otherwise the upload gate blocks on it forever.
+        if (!framesRef.current[active.step]) {
+          await captureFallbackFrame(active.step);
+        }
         maybeStartUpload();
       })
       .catch((err) => {
@@ -733,12 +788,40 @@ export function FaceScanner({
         setCameraError(`The ${active.step.toLowerCase()} clip could not be saved. Please try again.`);
         setPhase("error");
       });
-  }, [state.steps, maybeStartUpload]);
+  }, [state.steps, maybeStartUpload, captureFallbackFrame]);
 
   // The last segment may resolve before the machine reaches RECORDING_COMPLETE.
   useEffect(() => {
     if (state.step === "RECORDING_COMPLETE") maybeStartUpload();
   }, [state.step, maybeStartUpload]);
+
+  // Safety net. Every clip is in but the upload gate has not opened, so a still
+  // is missing and the fallback capture did not cover it. Retry once, then say
+  // exactly what is wrong — the recording watchdog would otherwise fire minutes
+  // later blaming the scan for taking too long, which is not what happened.
+  useEffect(() => {
+    if (state.step !== "RECORDING_COMPLETE") return;
+    if (uploadStartedRef.current) return;
+
+    const id = setTimeout(async () => {
+      if (uploadStartedRef.current) return;
+
+      for (const step of CHALLENGE_SEQUENCE) {
+        if (!framesRef.current[step]) await captureFallbackFrame(step);
+      }
+      maybeStartUpload();
+      if (uploadStartedRef.current) return;
+
+      const missing = CHALLENGE_SEQUENCE.filter((step) => !framesRef.current[step]);
+      pushLog(`No still frame for: ${missing.join(", ")}`);
+      setCameraError(
+        "The scan could not save a clear photo for every direction. Please try again in better light."
+      );
+      setPhase("error");
+    }, FRAME_RECOVERY_GRACE_MS);
+
+    return () => clearTimeout(id);
+  }, [state.step, maybeStartUpload, captureFallbackFrame, pushLog]);
 
   // Brief "captured" flash on the step rail.
   useEffect(() => {

@@ -119,11 +119,17 @@ export async function analyzeSkin(input: SkinAnalysisInput): Promise<SkinAnalysi
   );
 
   const images: Array<{ step: string; dataUrl: string }> = [];
+  const skipped: string[] = [];
   for (const frame of ordered) {
     if (images.length >= MAX_FRAMES) break;
     try {
       const bytes = await getObjectBytes(frame.objectKey);
-      if (bytes.byteLength > MAX_IMAGE_BYTES) continue;
+      if (bytes.byteLength > MAX_IMAGE_BYTES) {
+        // Oversized frames are skipped rather than sent, so a run of them ends
+        // as a bare "no_image" that says nothing about the real cause.
+        skipped.push(`${frame.step} (${Math.round(bytes.byteLength / 1024)}KB)`);
+        continue;
+      }
       images.push({ step: frame.step, dataUrl: toDataUrl(bytes) });
     } catch {
       // Try the next view; one usable frame is enough.
@@ -131,8 +137,14 @@ export async function analyzeSkin(input: SkinAnalysisInput): Promise<SkinAnalysi
   }
 
   if (images.length === 0) {
-    throw new SkinAnalysisError("no_image", "No captured frame could be read for analysis.");
+    throw new SkinAnalysisError(
+      "no_image",
+      skipped.length > 0
+        ? `No captured frame could be read for analysis. Over the ${Math.round(MAX_IMAGE_BYTES / 1024)}KB limit: ${skipped.join(", ")}.`
+        : "No captured frame could be read for analysis."
+    );
   }
+
 
   const context = input.context ?? {};
   const contextLines = [
