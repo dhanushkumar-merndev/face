@@ -1,8 +1,10 @@
 "use client";
 
-import { useForm } from "react-hook-form";
+
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { saveFormState, getFormState } from "@/lib/storage/scan-storage";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -26,6 +28,18 @@ const consentSchema = z.object({
 
 export type ConsentValues = z.infer<typeof consentSchema>;
 
+function getSavedDefaultValues(): ConsentValues {
+  const saved = getFormState();
+  return {
+    subjectName: saved.subjectName ?? "",
+    subjectEmail: saved.subjectEmail ?? "",
+    subjectPhone: saved.subjectPhone ?? "",
+    consentGiven: false,
+    adultDeclaration: false,
+    acknowledgeApproximate: false,
+  };
+}
+
 export function ConsentForm({
   onConsent,
   busy,
@@ -37,21 +51,16 @@ export function ConsentForm({
     register,
     handleSubmit,
     setValue,
-    watch,
+    control,
     formState: { errors },
   } = useForm<ConsentValues>({
     resolver: zodResolver(consentSchema),
-    defaultValues: {
-      subjectName: "",
-      subjectEmail: "",
-      subjectPhone: "",
-      consentGiven: false,
-      adultDeclaration: false,
-      acknowledgeApproximate: false,
-    },
+    defaultValues: getSavedDefaultValues(),
   });
 
-  const watched = watch();
+  const consentGiven = useWatch({ control, name: "consentGiven" });
+  const adultDeclaration = useWatch({ control, name: "adultDeclaration" });
+  const acknowledgeApproximate = useWatch({ control, name: "acknowledgeApproximate" });
 
   const toggle = (name: keyof ConsentValues) => (checked: boolean) => {
     setValue(name, checked as never);
@@ -72,7 +81,14 @@ export function ConsentForm({
       </CardHeader>
       <CardContent>
         <form
-          onSubmit={handleSubmit((values) => onConsent(values))}
+          onSubmit={handleSubmit((values) => {
+            saveFormState({
+              subjectName: values.subjectName,
+              subjectEmail: values.subjectEmail,
+              subjectPhone: values.subjectPhone,
+            });
+            onConsent(values);
+          })}
           className="flex flex-col gap-4"
         >
           <div className="flex flex-col gap-1">
@@ -100,7 +116,7 @@ export function ConsentForm({
           <div className="flex items-start gap-2">
             <Checkbox
               id="consentGiven"
-              checked={watched.consentGiven}
+              checked={Boolean(consentGiven)}
               onCheckedChange={toggle("consentGiven")}
             />
             <Label htmlFor="consentGiven" className="font-normal leading-snug">
@@ -113,7 +129,7 @@ export function ConsentForm({
           <div className="flex items-start gap-2">
             <Checkbox
               id="adultDeclaration"
-              checked={watched.adultDeclaration}
+              checked={Boolean(adultDeclaration)}
               onCheckedChange={toggle("adultDeclaration")}
             />
             <Label htmlFor="adultDeclaration" className="font-normal leading-snug">
@@ -127,7 +143,7 @@ export function ConsentForm({
           <div className="flex items-start gap-2">
             <Checkbox
               id="acknowledgeApproximate"
-              checked={watched.acknowledgeApproximate}
+              checked={Boolean(acknowledgeApproximate)}
               onCheckedChange={toggle("acknowledgeApproximate")}
             />
             <Label htmlFor="acknowledgeApproximate" className="font-normal leading-snug">

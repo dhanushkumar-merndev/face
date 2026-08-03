@@ -79,16 +79,19 @@ export async function createPresignedUpload(
   contentType: string,
   ttlSeconds = 300
 ): Promise<PresignedUpload> {
+  // Strip codec parameters (e.g. "video/webm;codecs=vp9" -> "video/webm") so
+  // S3 signature matches standard browser fetch headers exactly.
+  const baseContentType = contentType.split(";")[0].trim();
   const command = new PutObjectCommand({
     Bucket: getBucket(),
     Key: objectKey,
-    ContentType: contentType,
+    ContentType: baseContentType,
   });
   const url = await getSignedUrl(getS3Client(), command, { expiresIn: ttlSeconds });
   return {
     url,
     objectKey,
-    headers: { "Content-Type": contentType },
+    headers: { "Content-Type": baseContentType },
   };
 }
 

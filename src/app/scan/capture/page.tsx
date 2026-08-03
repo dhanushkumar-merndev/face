@@ -5,15 +5,23 @@ import { useRouter } from "next/navigation";
 import { ConsentForm, type ConsentValues } from "@/components/scan/ConsentForm";
 import { FaceScanner } from "@/components/scan/FaceScanner";
 import { scanApi } from "@/lib/scan/api";
+import { saveFormState, getFormState, clearActiveSession } from "@/lib/storage/scan-storage";
 
 /**
  * Consent gate -> camera permission -> full-screen guided capture.
- * The camera is NOT started before consent is given.
+ * Automatically restores active scan session on hard refresh using state initializer.
  */
 export default function ScanCapturePage() {
   const router = useRouter();
-  const [consented, setConsented] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+
+  // Lazy state initializers read from client storage directly during initial render,
+  // avoiding synchronous setState calls inside useEffect.
+  const [sessionId, setSessionId] = useState<string | null>(() => {
+    return getFormState().activeSessionId ?? null;
+  });
+  const [consented, setConsented] = useState<boolean>(() => {
+    return Boolean(getFormState().activeSessionId);
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,7 +41,9 @@ export default function ScanCapturePage() {
         setError(res.error.message);
         return;
       }
-      setSessionId(res.data.sessionId);
+      const newSid = res.data.sessionId;
+      saveFormState({ activeSessionId: newSid });
+      setSessionId(newSid);
       setConsented(true);
     } catch (err) {
       console.error(err);
@@ -41,6 +51,16 @@ export default function ScanCapturePage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleComplete = ({ sessionId: sid }: { sessionId: string }) => {
+    clearActiveSession();
+    router.push(`/scan/${sid}/result`);
+  };
+
+  const handleExit = () => {
+    clearActiveSession();
+    router.push("/");
   };
 
   if (!consented) {
@@ -63,8 +83,8 @@ export default function ScanCapturePage() {
   return (
     <FaceScanner
       sessionId={sessionId ?? undefined}
-      onResult={({ sessionId: sid }) => router.push(`/scan/${sid}/result`)}
-      onExit={() => router.push("/")}
+      onResult={handleComplete}
+      onExit={handleExit}
     />
   );
 }

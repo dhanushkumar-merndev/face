@@ -1,24 +1,36 @@
 import type { ChallengeStep } from "@/lib/face/types";
 import type { PresignedSlot } from "./api";
 
-/** Uploads a Blob directly to a presigned S3 PUT URL. */
+/** Uploads a Blob directly to a presigned S3 PUT URL with automatic retries. */
 export async function uploadToS3(
   url: string,
   blob: Blob,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  retries = 3
 ): Promise<{ etag: string | null }> {
-  const res = await fetch(url, {
-    method: "PUT",
-    headers,
-    body: blob,
-  });
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      const res = await fetch(url, {
+        method: "PUT",
+        headers,
+        body: blob,
+      });
 
-  if (!res.ok) {
-    throw new Error(`Upload failed with status ${res.status}.`);
+      if (res.ok) {
+        const etag = res.headers.get("etag");
+        return { etag };
+      }
+
+      throw new Error(`Upload failed with status ${res.status}.`);
+    } catch (err) {
+      lastError = err as Error;
+      if (attempt < retries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * Math.pow(2, attempt)));
+      }
+    }
   }
-
-  const etag = res.headers.get("etag");
-  return { etag };
+  throw lastError ?? new Error("Upload failed.");
 }
 
 /** One direction's video segment and still frame, with their upload slots. */
