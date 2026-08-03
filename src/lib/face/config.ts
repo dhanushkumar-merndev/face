@@ -4,9 +4,14 @@
  */
 
 export const SCAN_CONFIG = {
-  maxDurationMs: 60_000,
+  maxDurationMs: 90_000,
   countdownMs: 3_000,
-  requiredHoldMs: 600,
+  /**
+   * How long each direction must be held. The segment recorder starts on pose
+   * lock and stops when the hold completes, so this is also the length of each
+   * captured clip — roughly 3s per side.
+   */
+  requiredHoldMs: 3_000,
   minimumStableFrames: 6,
   faceConfidenceMin: 0.5,
   centerYawAbsMax: 14,
@@ -17,7 +22,13 @@ export const SCAN_CONFIG = {
   faceAreaMinRatio: 0.04,
   faceAreaMaxRatio: 0.70,
   maxCenterOffsetRatio: 0.35,
-  lostFaceGraceMs: 400,
+  /**
+   * Losing the pose for longer than this zeroes the hold progress outright.
+   * Scaled up with requiredHoldMs: at a 3s hold, a 400ms window meant one
+   * wobble near the end threw away the whole segment and the user started the
+   * direction over.
+   */
+  lostFaceGraceMs: 800,
   /** Pause after a direction is captured, before the next one is shown. */
   stepTransitionMs: 800,
 } as const;
@@ -25,8 +36,12 @@ export const SCAN_CONFIG = {
 /** Controlled inference rate: ~15 FPS. */
 export const TARGET_INFERENCE_INTERVAL_MS = 66;
 
-/** Max duration of the whole scan and per-segment upload size (bytes). */
-export const MAX_RECORDING_DURATION_MS = 60_000;
+/**
+ * Max duration of the whole scan and per-segment upload size (bytes).
+ * Must stay in step with SCAN_CONFIG.maxDurationMs — three 3s holds plus the
+ * time spent finding each pose no longer fits comfortably in 60s.
+ */
+export const MAX_RECORDING_DURATION_MS = 90_000;
 export const MAX_VIDEO_UPLOAD_BYTES = 30 * 1024 * 1024; // 30 MB per segment
 
 /** Best-frame capture settings. */

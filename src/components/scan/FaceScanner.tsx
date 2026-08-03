@@ -780,6 +780,13 @@ export function FaceScanner({
         // take one now — otherwise the upload gate blocks on it forever.
         if (!framesRef.current[active.step]) {
           await captureFallbackFrame(active.step);
+          pushLog(
+            framesRef.current[active.step]
+              ? `${active.step} clip saved, still recovered`
+              : `${active.step} clip saved, STILL MISSING`
+          );
+        } else {
+          pushLog(`${active.step} clip + still saved`);
         }
         maybeStartUpload();
       })
@@ -788,7 +795,7 @@ export function FaceScanner({
         setCameraError(`The ${active.step.toLowerCase()} clip could not be saved. Please try again.`);
         setPhase("error");
       });
-  }, [state.steps, maybeStartUpload, captureFallbackFrame]);
+  }, [state.steps, maybeStartUpload, captureFallbackFrame, pushLog]);
 
   // The last segment may resolve before the machine reaches RECORDING_COMPLETE.
   useEffect(() => {
@@ -834,12 +841,23 @@ export function FaceScanner({
   useEffect(() => {
     if (phase !== "active") return;
     const id = setTimeout(() => {
+      // Record what was actually outstanding. "Took too long" is true of the
+      // clock and nothing else; without this the log cannot distinguish a user
+      // who never finished the turns from a scan that finished and then stalled.
+      const missingClips = CHALLENGE_SEQUENCE.filter((s) => !segmentsRef.current[s]);
+      const missingStills = CHALLENGE_SEQUENCE.filter((s) => !framesRef.current[s]);
+      pushLog(
+        `TIMEOUT after ${MAX_RECORDING_DURATION_MS / 1000}s — machine=${stateRef.current.step}` +
+          `, missing clips=[${missingClips.join(",") || "none"}]` +
+          `, missing stills=[${missingStills.join(",") || "none"}]`
+      );
+
       dispatch({ type: "TIMEOUT" });
       setPhase("error");
       setCameraError("The scan took too long. Please try again.");
     }, MAX_RECORDING_DURATION_MS);
     return () => clearTimeout(id);
-  }, [phase]);
+  }, [phase, pushLog]);
 
   // -------------------------------------------------------------------------
   // Lifecycle

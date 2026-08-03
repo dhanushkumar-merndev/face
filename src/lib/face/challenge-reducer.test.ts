@@ -28,6 +28,38 @@ function framePayload(pose: HeadPose, elapsedMs: number, qualityOk = true, faceC
   };
 }
 
+const FRAME_MS = 100;
+
+/**
+ * Frames needed to satisfy a full hold, with margin. Derived from the config so
+ * retuning requiredHoldMs does not silently invalidate these tests — the first
+ * frame contributes no delta, hence the extra couple of frames.
+ */
+const HOLD_FRAMES = Math.ceil(SCAN_CONFIG.requiredHoldMs / FRAME_MS) + 2;
+
+/** Frames of a failing pose needed to exceed the grace period. */
+const GRACE_BREAK_FRAMES = Math.ceil(SCAN_CONFIG.lostFaceGraceMs / FRAME_MS) + 2;
+
+/** Feeds `count` frames of `pose` at FRAME_MS intervals, starting after `fromMs`. */
+function feed(
+  state: ReturnType<typeof reducer>,
+  pose: HeadPose,
+  count: number,
+  fromMs: number
+): { state: ReturnType<typeof reducer>; t: number } {
+  let t = fromMs;
+  for (let i = 0; i < count; i += 1) {
+    t += FRAME_MS;
+    state = reducer(state, framePayload(pose, t));
+  }
+  return { state, t };
+}
+
+const CENTER_POSE: HeadPose = { yaw: 0, pitch: 0, roll: 0 };
+const LEFT_POSE: HeadPose = { yaw: -25, pitch: 0, roll: 0 };
+const RIGHT_POSE: HeadPose = { yaw: 25, pitch: 0, roll: 0 };
+const BAD_POSE: HeadPose = { yaw: 40, pitch: 0, roll: 0 };
+
 describe("challenge reducer — hold logic", () => {
   it("advances CENTER -> LEFT after a continuous hold", () => {
     let state = { ...initialState };
@@ -35,9 +67,7 @@ describe("challenge reducer — hold logic", () => {
     expect(state.currentStep).toBe("CENTER");
 
     // Simulate frames at 100ms intervals meeting center condition.
-    for (let t = 100; t <= 1000; t += 100) {
-      state = reducer(state, framePayload({ yaw: 0, pitch: 0, roll: 0 }, t, true));
-    }
+    ({ state } = feed(state, CENTER_POSE, HOLD_FRAMES, 0));
 
     expect(state.currentStep).toBe("LEFT");
     expect(state.steps).toHaveLength(1);
@@ -50,16 +80,14 @@ describe("challenge reducer — hold logic", () => {
     let state = { ...initialState };
     state = reducer(state, { type: "COUNTDOWN_FINISHED" });
 
-    // Hold for 400ms.
-    for (let t = 100; t <= 400; t += 100) {
-      state = reducer(state, framePayload({ yaw: 0, pitch: 0, roll: 0 }, t));
-    }
+    // Partial hold — deliberately short of requiredHoldMs so the step cannot
+    // complete before the pose is broken.
+    const held = feed(state, CENTER_POSE, 3, 0);
+    state = held.state;
     expect(state.stableDurationMs).toBeGreaterThan(0);
 
-    // Bad pose for 600ms > grace 400ms (frames at 500..1000).
-    for (let t = 500; t <= 1000; t += 100) {
-      state = reducer(state, framePayload({ yaw: 40, pitch: 0, roll: 0 }, t));
-    }
+    // Break the pose for longer than the grace period.
+    ({ state } = feed(state, BAD_POSE, GRACE_BREAK_FRAMES, held.t));
 
     expect(state.stableDurationMs).toBe(0);
     expect(state.stableFrames).toBe(0);
@@ -71,20 +99,12 @@ describe("challenge reducer — hold logic", () => {
     const seen = new Set<string>();
     seen.add(state.currentStep as string);
 
-    const seq = ["CENTER", "LEFT", "RIGHT"];
+    const seq = ["CENTER", "LEFT", "RIGHT"] as const;
     let t = 0;
     for (const expected of seq) {
-      const pose: HeadPose =
-        expected === "LEFT"
-          ? { yaw: -25, pitch: 0, roll: 0 }
-          : expected === "RIGHT"
-            ? { yaw: 25, pitch: 0, roll: 0 }
-            : { yaw: 0, pitch: 0, roll: 0 };
-      // Give each step 10 frames of 100ms.
-      for (let i = 0; i < 10; i++) {
-        t += 100;
-        state = reducer(state, framePayload(pose, t));
-      }
+      const pose =
+        expected === "LEFT" ? LEFT_POSE : expected === "RIGHT" ? RIGHT_POSE : CENTER_POSE;
+      ({ state, t } = feed(state, pose, HOLD_FRAMES, t));
       seen.add(state.currentStep as string);
     }
 
@@ -104,17 +124,15 @@ describe("challenge reducer — hold logic", () => {
     expect(state.armed).toBe(false);
 
     // One good CENTER frame is enough to start that direction's recording.
-    state = reducer(state, framePayload({ yaw: 0, pitch: 0, roll: 0 }, 100));
+    state = reducer(state, framePayload(CENTER_POSE, 100));
     expect(state.armed).toBe(true);
 
     // Arming is sticky across a brief wobble so the clip is not chopped up.
-    state = reducer(state, framePayload({ yaw: 40, pitch: 0, roll: 0 }, 200));
+    state = reducer(state, framePayload(BAD_POSE, 200));
     expect(state.armed).toBe(true);
 
     // Completing CENTER hands over to LEFT, which starts disarmed.
-    for (let t = 300; t <= 1400; t += 100) {
-      state = reducer(state, framePayload({ yaw: 0, pitch: 0, roll: 0 }, t));
-    }
+    ({ state } = feed(state, CENTER_POSE, HOLD_FRAMES, 200));
     expect(state.currentStep).toBe("LEFT");
     expect(state.armed).toBe(false);
   });
