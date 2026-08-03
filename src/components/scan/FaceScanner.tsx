@@ -391,13 +391,17 @@ export function FaceScanner({
     };
   }, [phase, landmarker, runInference]);
 
+  const countdownStartedRef = useRef(false);
+
   // -------------------------------------------------------------------------
   // Countdown when camera + model ready and face is centered.
   // -------------------------------------------------------------------------
   useEffect(() => {
-    if (phase === "preparing" && stream && landmarker && faceCentered && countdown === null) {
-      let remaining = SCAN_CONFIG.countdownMs / 1000;
-      const t = setTimeout(() => setCountdown(remaining), 0);
+    if (phase === "preparing" && stream && landmarker && faceCentered && !countdownStartedRef.current) {
+      countdownStartedRef.current = true;
+      let remaining = Math.ceil(SCAN_CONFIG.countdownMs / 1000);
+      setCountdown(remaining);
+
       const id = setInterval(() => {
         remaining -= 1;
         if (remaining <= 0) {
@@ -410,12 +414,12 @@ export function FaceScanner({
           setCountdown(remaining);
         }
       }, 1000);
+
       return () => {
-        clearTimeout(t);
         clearInterval(id);
       };
     }
-  }, [phase, stream, landmarker, faceCentered, countdown]);
+  }, [phase, stream, landmarker, faceCentered]);
 
   // -------------------------------------------------------------------------
   // Upload + analysis
