@@ -1,14 +1,18 @@
 import type { ChallengeStep } from "@/lib/face/types";
 import type { PresignedSlot } from "./api";
 
-/** Uploads a Blob directly to a presigned S3 PUT URL with automatic retries. */
+/** Uploads a Blob directly to presigned S3 PUT URL with proxy fallback on CORS/network failure. */
 export async function uploadToS3(
   url: string,
   blob: Blob,
   headers: Record<string, string>,
-  retries = 3
+  sessionId?: string,
+  objectKey?: string,
+  retries = 2
 ): Promise<{ etag: string | null }> {
   let lastError: Error | null = null;
+
+  // 1. Try direct S3 upload
   for (let attempt = 0; attempt < retries; attempt += 1) {
     try {
       const res = await fetch(url, {
@@ -26,10 +30,35 @@ export async function uploadToS3(
     } catch (err) {
       lastError = err as Error;
       if (attempt < retries - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 500 * Math.pow(2, attempt)));
+        await new Promise((resolve) => setTimeout(resolve, 300 * Math.pow(2, attempt)));
       }
     }
   }
+
+  // 2. If direct S3 upload fails (e.g. CORS "Failed to fetch" on mobile), fallback to server proxy
+  if (sessionId && objectKey) {
+    try {
+      const formData = new FormData();
+      formData.append("file", blob);
+      formData.append("objectKey", objectKey);
+      formData.append("contentType", headers["Content-Type"] || blob.type || "application/octet-stream");
+
+      const proxyRes = await fetch(`/api/scans/${sessionId}/upload-proxy`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (proxyRes.ok) {
+        const json = await proxyRes.json();
+        if (json.success) {
+          return { etag: json.data.etag };
+        }
+      }
+    } catch (proxyErr) {
+      console.warn("Proxy upload fallback failed:", proxyErr);
+    }
+  }
+
   throw lastError ?? new Error("Upload failed.");
 }
 
@@ -47,11 +76,11 @@ export interface CaptureUploadResult {
 }
 
 /**
- * Uploads every direction's pair, reporting progress as each object lands so
- * the scanner can drive its upload meter.
+ * Uploads every direction's pair, reporting progress as each object lands.
  */
 export async function uploadCaptures(
   captures: CaptureUpload[],
+  sessionId?: string,
   onProgress?: (uploaded: number, total: number) => void
 ): Promise<CaptureUploadResult[]> {
   const total = captures.length * 2;
@@ -63,7 +92,9 @@ export async function uploadCaptures(
     const video = await uploadToS3(
       capture.video.presign.url,
       capture.video.blob,
-      capture.video.presign.headers
+      capture.video.presign.headers,
+      sessionId,
+      capture.video.presign.objectKey
     );
     uploaded += 1;
     onProgress?.(uploaded, total);
@@ -71,7 +102,9 @@ export async function uploadCaptures(
     const frame = await uploadToS3(
       capture.frame.presign.url,
       capture.frame.blob,
-      capture.frame.presign.headers
+      capture.frame.presign.headers,
+      sessionId,
+      capture.frame.presign.objectKey
     );
     uploaded += 1;
     onProgress?.(uploaded, total);

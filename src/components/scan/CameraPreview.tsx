@@ -3,8 +3,8 @@
 import { useRef, useEffect } from "react";
 
 /**
- * Mirrored live camera preview. The video element is CSS-mirrored
- * (scale-x-[-1]) so it feels natural to the user.
+ * Mirrored live camera preview. Uses stable ref binding to avoid
+ * re-render loops and video flickering on mobile.
  */
 export function CameraPreview({
   stream,
@@ -19,37 +19,31 @@ export function CameraPreview({
     const video = videoRef.current;
     if (!video || !stream) return;
 
-    video.srcObject = stream;
-    video.play().catch(() => {});
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
 
-    const notifyReady = () => {
-      if (video.readyState >= 1) {
+    const checkReady = () => {
+      if (video.readyState >= 2) {
         onVideoReady?.(video);
       }
     };
 
-    notifyReady();
+    checkReady();
 
-    const onLoadedMetadata = () => notifyReady();
-    const onCanPlay = () => notifyReady();
-
-    video.addEventListener("loadedmetadata", onLoadedMetadata);
-    video.addEventListener("canplay", onCanPlay);
+    video.addEventListener("loadedmetadata", checkReady);
+    video.addEventListener("canplay", checkReady);
 
     return () => {
-      video.removeEventListener("loadedmetadata", onLoadedMetadata);
-      video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("loadedmetadata", checkReady);
+      video.removeEventListener("canplay", checkReady);
     };
   }, [stream, onVideoReady]);
 
   return (
     <video
-      ref={(el) => {
-        videoRef.current = el;
-        if (el && el.readyState >= 1) {
-          onVideoReady?.(el);
-        }
-      }}
+      ref={videoRef}
       className="h-full w-full -scale-x-100 object-cover"
       playsInline
       muted
@@ -57,4 +51,3 @@ export function CameraPreview({
     />
   );
 }
-

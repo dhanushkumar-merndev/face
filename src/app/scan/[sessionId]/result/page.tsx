@@ -2,12 +2,47 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import confetti from "canvas-confetti";
 import { scanApi, type ScanStatusResult, type SkinAnalysisPayload } from "@/lib/scan/api";
 import { Button } from "@/components/ui/button";
 import { SkinScoreBars } from "@/components/scan/SkinScoreBars";
 import { Droplets, Sparkles, ShieldCheck, RotateCcw, Trash2, Loader2 } from "lucide-react";
 
 const POLL_INTERVAL_MS = 3000;
+
+function triggerConfetti() {
+  const count = 200;
+  const defaults = { origin: { y: 0.7 } };
+
+  function fire(particleRatio: number, opts: confetti.Options) {
+    confetti({
+      ...defaults,
+      ...opts,
+      particleCount: Math.floor(count * particleRatio),
+    });
+  }
+
+  fire(0.25, {
+    spread: 26,
+    startVelocity: 55,
+  });
+  fire(0.2, { spread: 60 });
+  fire(0.35, {
+    spread: 100,
+    decay: 0.91,
+    scalar: 0.8,
+  });
+  fire(0.1, {
+    spread: 120,
+    startVelocity: 25,
+    decay: 0.92,
+    scalar: 1.2,
+  });
+  fire(0.1, {
+    spread: 120,
+    startVelocity: 45,
+  });
+}
 
 export default function ScanResultPage() {
   const params = useParams<{ sessionId: string }>();
@@ -20,6 +55,7 @@ export default function ScanResultPage() {
   const [deleted, setDeleted] = useState(false);
 
   const settledRef = useRef(false);
+  const confettiFiredRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -56,6 +92,13 @@ export default function ScanResultPage() {
       clearTimeout(t);
     };
   }, [load]);
+
+  useEffect(() => {
+    if (result?.status === "completed" && !confettiFiredRef.current) {
+      confettiFiredRef.current = true;
+      triggerConfetti();
+    }
+  }, [result?.status]);
 
   const handleDelete = async () => {
     if (!confirm("Delete this scan and all associated data? This cannot be undone.")) return;

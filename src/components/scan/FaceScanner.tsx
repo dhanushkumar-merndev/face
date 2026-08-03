@@ -98,6 +98,7 @@ export function FaceScanner({
   const resultSentRef = useRef(false);
   const uploadStartedRef = useRef(false);
   const recordingAnnouncedRef = useRef(false);
+  const analysisCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Session id may arrive asynchronously from the parent.
   useEffect(() => {
@@ -159,7 +160,7 @@ export function FaceScanner({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pushLog]);
 
   // -------------------------------------------------------------------------
   // Camera request
@@ -217,7 +218,7 @@ export function FaceScanner({
       }
       setPhase("error");
     }
-  }, []);
+  }, [pushLog]);
 
   // -------------------------------------------------------------------------
   // Per-direction still capture, taken at full video resolution.
@@ -315,11 +316,14 @@ export function FaceScanner({
         landmarks: lm0.map((p) => ({ x: p.x, y: p.y })),
       };
 
-      const analysis = document.createElement("canvas");
       const targetW = 160;
       const targetH = Math.round((frameHeight / frameWidth) * targetW);
-      analysis.width = targetW;
-      analysis.height = targetH;
+      if (!analysisCanvasRef.current) {
+        analysisCanvasRef.current = document.createElement("canvas");
+      }
+      const analysis = analysisCanvasRef.current;
+      if (analysis.width !== targetW) analysis.width = targetW;
+      if (analysis.height !== targetH) analysis.height = targetH;
       const ctx = analysis.getContext("2d", { willReadFrequently: true });
       if (ctx) {
         ctx.drawImage(video, 0, 0, targetW, targetH);
@@ -578,7 +582,7 @@ export function FaceScanner({
       });
 
       pushLog(`Uploading ${bundle.length} captures to S3...`);
-      await uploadCaptures(bundle);
+      await uploadCaptures(bundle, sid);
       pushLog(`S3 uploads complete`);
 
       setUploadIndex(3);
@@ -646,7 +650,7 @@ export function FaceScanner({
       setPhase("error");
       setCameraError(`Upload failed: ${errMsg}`);
     }
-  }, [onResult]);
+  }, [onResult, pushLog]);
 
   /** Fires once every direction has both its segment and its still. */
   const maybeStartUpload = useCallback(() => {

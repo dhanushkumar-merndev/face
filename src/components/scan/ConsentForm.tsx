@@ -79,7 +79,15 @@ export function ConsentForm({
           sends your captured frames to an external AI provider for analysis.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-col gap-4">
+        <div className="rounded-2xl border border-amber-400/30 bg-amber-950/40 p-3.5 flex items-start gap-3">
+          <span className="text-xl">👓</span>
+          <div className="text-xs leading-relaxed text-amber-200/90">
+            <strong className="block text-amber-300 font-semibold mb-0.5">Please remove your glasses</strong>
+            For accurate skin scoring and face calibration, please remove any glasses, sunglasses, or face coverings before starting the scan.
+          </div>
+        </div>
+
         <form
           onSubmit={handleSubmit((values) => {
             saveFormState({
