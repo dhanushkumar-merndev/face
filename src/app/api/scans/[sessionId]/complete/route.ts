@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { NextRequest, after } from "next/server";
 import {
   completeScanSchema,
   isRequiredSequence,
@@ -17,6 +17,13 @@ import {
 import { analyzeSkin, createStandardSkinReadout, SkinAnalysisError } from "@/lib/groq/skin-analysis";
 import { isGroqConfigured } from "@/lib/groq/client";
 import { logger } from "@/lib/logger";
+
+/**
+ * Ceiling for the deferred analysis. Rekognition plus two Groq attempts at a
+ * 20s timeout each can run close to 45s, and without this the platform default
+ * cuts the work off mid-flight and strands the scan in `analyzing`.
+ */
+export const maxDuration = 60;
 
 export async function POST(
   req: NextRequest,
@@ -153,12 +160,62 @@ export async function POST(
   }));
   await supabase.from("scan_steps").upsert(stepRows, { onConflict: "session_id,step" });
 
-  // 5. Optional age band from Rekognition DetectFaces on the frontal frame.
-  //    The headline skin age comes from the vision pass in step 6, so a
-  //    deployment without AWS credentials skips this and the result page simply
-  //    omits the age-band pill. Note this is also the only server-side check
-  //    that the frame holds exactly one face — without it the pipeline trusts
-  //    the client's own face detection.
+  // 5. Everything the client needs is now durable, so the analysis runs after
+  //    the response instead of holding the request open for it. The result page
+  //    already polls /status until the scan settles, so nothing downstream
+  //    changes; the client only ever read `ageRange` here and discards it.
+  after(async () => {
+    try {
+      await runAnalysis({ sessionId, input, analysisCapture });
+    } catch (err) {
+      // A crash in here would otherwise strand the scan in `analyzing`
+      // forever, with the result page polling against a status that can
+      // never change.
+      logger.error("analysis_crashed", { sessionId, error: (err as Error).message });
+      await getSupabaseAdmin()
+        .from("scan_sessions")
+        .update({
+          status: "failed",
+          failure_code: "analysis_error",
+          failure_message: "The analysis did not finish.",
+          custom_challenge_passed: true,
+          skin_status: "skipped",
+        })
+        .eq("id", sessionId);
+    }
+  });
+
+  return ok({
+    sessionId,
+    status: "analyzing",
+    ageRange: null,
+    skin: null,
+    completedAt: null,
+  });
+}
+
+/**
+ * Age band, skin read-out and final persistence. Split out of the request so
+ * the upload can be acknowledged immediately; every exit path must leave the
+ * session in a terminal state.
+ */
+async function runAnalysis({
+  sessionId,
+  input,
+  analysisCapture,
+}: {
+  sessionId: string;
+  input: ReturnType<typeof completeScanSchema.parse>;
+  analysisCapture: ReturnType<typeof completeScanSchema.parse>["captures"][number];
+}) {
+  const supabase = getSupabaseAdmin();
+
+  // Optional age band from Rekognition DetectFaces on the frontal frame. The
+  // headline skin age comes from the vision pass below, so a deployment without
+  // AWS credentials skips this and the result page simply omits the age-band
+  // pill. Note this is also the only server-side check that the frame holds
+  // exactly one face — without it the pipeline trusts the client's own
+  // face detection.
   let ageResult: AgeAnalysis | null = null;
   if (!isRekognitionConfigured()) {
     logger.info("rekognition_skipped", { sessionId, reason: "not_configured" });
@@ -186,15 +243,7 @@ export async function POST(
           event_data: { code: err.code },
         });
         logger.warn("analysis_failed", { sessionId, code: err.code });
-        return ok({
-          sessionId,
-          status: "failed",
-          ageRange: null,
-          skin: null,
-          completedAt: null,
-          failureCode: err.code,
-          failureMessage: "The age could not be estimated from the captured frame.",
-        });
+        return;
       }
       // The provider itself is unreachable or misconfigured. Not the user's
       // fault and not worth losing a good scan over — drop the age band and
@@ -203,8 +252,8 @@ export async function POST(
     }
   }
 
-  // 6. Groq skin read-out. Optional and never fatal: a scan without a skin
-  //    score is still a completed scan.
+  // Groq skin read-out. Optional and never fatal: a scan without a skin score
+  // is still a completed scan.
   const skin = await runSkinAnalysis({
     sessionId,
     captures: input.captures.map((c) => ({ step: c.step, objectKey: c.frame.objectKey })),
@@ -216,8 +265,7 @@ export async function POST(
     },
   });
 
-  // 7. Persist results. One timestamp for both the row and the response so the
-  //    value the client shows is the value that was stored.
+  // Persist results. The result page reads these back through /status.
   const completedAt = new Date().toISOString();
   const { error: resultError } = await supabase
     .from("scan_sessions")
@@ -248,8 +296,10 @@ export async function POST(
     .eq("id", sessionId);
 
   if (resultError) {
+    // Throwing hands control to the caller's catch, which marks the session
+    // failed rather than leaving it stuck on `analyzing`.
     logger.error("complete_result_save_failed", { sessionId, error: resultError.message });
-    return internalError("Could not save the analysis result.");
+    throw new Error(`Could not save the analysis result: ${resultError.message}`);
   }
 
   await supabase.from("scan_audit_events").insert({
@@ -267,14 +317,9 @@ export async function POST(
     ageLow: ageResult?.ageLow ?? null,
     ageHigh: ageResult?.ageHigh ?? null,
     skinStatus: skin.status,
-  });
-
-  return ok({
-    sessionId,
-    status: "completed",
-    ageRange: ageResult ? { low: ageResult.ageLow, high: ageResult.ageHigh } : null,
-    skin: skin.result,
-    completedAt,
+    // Surfaces quota exhaustion: "standard" means the vision call failed and a
+    // canned read-out was served in its place.
+    skinProvider: skin.result?.provider ?? null,
   });
 }
 

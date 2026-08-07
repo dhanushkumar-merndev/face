@@ -15,7 +15,16 @@ import {
 } from "@/components/brand/ScanArtwork";
 import { Droplets, Sparkles, ShieldCheck, RotateCcw, Loader2 } from "lucide-react";
 
-const POLL_INTERVAL_MS = 3000;
+/**
+ * Polling backs off rather than hammering a fixed 3s: the analysis runs after
+ * the upload response now, and most of the wait is spent on the vision call.
+ * Each poll is a function invocation, so the tail is where the savings are.
+ */
+const POLL_START_MS = 2000;
+const POLL_MAX_MS = 8000;
+const POLL_BACKOFF = 1.4;
+/** Stop polling eventually; a scan stuck in `analyzing` will never settle. */
+const POLL_TIMEOUT_MS = 150_000;
 
 /** Palette-matched confetti so the celebration belongs to the same product. */
 const CONFETTI_COLORS = ["#b9824e", "#d5a568", "#5f7c63", "#3c2718", "#e9c79e"];
@@ -61,6 +70,7 @@ export default function ScanResultPage() {
   const [result, setResult] = useState<ScanStatusResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
 
   const settledRef = useRef(false);
   const confettiFiredRef = useRef(false);
@@ -86,18 +96,28 @@ export default function ScanResultPage() {
   }, [sessionId]);
 
   useEffect(() => {
-    const t = setTimeout(() => void load(), 0);
-    // Stop polling once the scan reaches a terminal state.
-    const id = setInterval(() => {
-      if (settledRef.current) {
-        clearInterval(id);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const startedAt = Date.now();
+    let delay = POLL_START_MS;
+
+    const tick = async () => {
+      if (cancelled) return;
+      await load();
+      // Stop once the scan reaches a terminal state.
+      if (cancelled || settledRef.current) return;
+      if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+        setTimedOut(true);
         return;
       }
-      void load();
-    }, POLL_INTERVAL_MS);
+      delay = Math.min(POLL_MAX_MS, Math.round(delay * POLL_BACKOFF));
+      timer = setTimeout(() => void tick(), delay);
+    };
+
+    void tick();
     return () => {
-      clearInterval(id);
-      clearTimeout(t);
+      cancelled = true;
+      clearTimeout(timer);
     };
   }, [load]);
 
@@ -146,11 +166,21 @@ export default function ScanResultPage() {
         <div className="animate-hud-rise rounded-3xl border border-[#eadbca] bg-white p-8 text-center shadow-[0_20px_50px_rgba(72,43,24,0.10)]">
           <FaceMeshEmblem className="mx-auto h-28 w-auto" />
           <p className="mt-4 font-serif text-2xl font-semibold text-[#3c2718]">
-            Reading your scan…
+            {timedOut ? "This is taking longer than usual" : "Reading your scan…"}
           </p>
           <p className="mt-2 text-sm leading-relaxed text-[#755d4a]">
-            Your three clips are being analyzed. This usually takes a few seconds.
+            {timedOut
+              ? "Your clips are safely uploaded. Refresh in a moment to check again."
+              : "Your three clips are being analyzed. This usually takes a few seconds."}
           </p>
+          {timedOut && (
+            <Button
+              onClick={() => window.location.reload()}
+              className="mt-6 h-12 rounded-full px-8 font-semibold"
+            >
+              Check again
+            </Button>
+          )}
         </div>
       </ResultShell>
     );

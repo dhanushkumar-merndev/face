@@ -22,9 +22,14 @@ export async function GET(req: NextRequest) {
   const status = searchParams.get("status");
   const ageBand = searchParams.get("ageBand");
 
+  // Explicit columns rather than "*": the row carries skin_analysis,
+  // quality_summary and the Rekognition blobs, none of which the list renders.
   let query = supabase
     .from("scan_sessions")
-    .select("*, scan_steps(step, step_order, passed), scan_assets(kind, byte_size)", { count: "exact" })
+    .select(
+      "id, status, created_at, subject_name, subject_email, subject_phone, age_low, age_high, custom_challenge_passed, duration_ms, retention_until, completed_at, scan_steps(step, step_order, passed), scan_assets(kind, byte_size)",
+      { count: "exact" }
+    )
     .order("created_at", { ascending: false })
     .range((page - 1) * pageSize, page * pageSize - 1);
 
