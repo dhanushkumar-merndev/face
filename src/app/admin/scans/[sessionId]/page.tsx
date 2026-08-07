@@ -5,6 +5,8 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { PrivateVideoPlayer } from "@/components/admin/PrivateVideoPlayer";
 import { AdminDeleteButton } from "@/components/admin/AdminDeleteButton";
 import { AdminRetryButton } from "@/components/admin/AdminRetryButton";
+import { AdminDownloadButton } from "@/components/admin/AdminDownloadButton";
+import { AdminTopbar } from "@/components/admin/AdminTopbar";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -14,26 +16,6 @@ import {
 } from "@/components/ui/card";
 
 export const metadata = { title: "Admin — Scan Detail" };
-
-type ScanStepRow = {
-  id: number;
-  step: string;
-  stepOrder: number;
-  passed: boolean;
-  hold_ms: number | null;
-  representative_yaw: number | null;
-  representative_pitch: number | null;
-  representative_roll: number | null;
-};
-
-type ScanAssetRow = {
-  id: string;
-  kind: string;
-  step: string | null;
-  object_key: string;
-  byte_size: number | null;
-  mime_type: string;
-};
 
 type SkinAnalysisRow = {
   skinAge?: number;
@@ -46,31 +28,14 @@ type SkinAnalysisRow = {
   summary?: string;
 };
 
-type ScanAuditRow = {
-  id: number;
-  created_at: string;
-  event_type: string;
-};
-
 type ScanDetail = {
   id: string;
   status: string;
-  age_low: number | null;
-  age_high: number | null;
-  face_confidence: number | null;
-  custom_challenge_passed: boolean;
-  duration_ms: number | null;
-  retention_until: string | null;
   failure_code: string | null;
   failure_message: string | null;
   skin_age: number | null;
   skin_status: string | null;
-  skin_provider: string | null;
-  skin_model: string | null;
   skin_analysis: SkinAnalysisRow | null;
-  scan_steps: ScanStepRow[];
-  scan_assets: ScanAssetRow[];
-  scan_audit_events: ScanAuditRow[];
 };
 
 export default async function AdminScanDetailPage({
@@ -85,13 +50,15 @@ export default async function AdminScanDetailPage({
   const supabase = getSupabaseAdmin();
   const { data: scan } = await supabase
     .from("scan_sessions")
-    .select("*, scan_steps(*), scan_assets(*), scan_audit_events(*)")
+    // The steps/assets/audit joins backed cards that no longer exist.
+    .select("*")
     .eq("id", sessionId)
     .single();
 
   if (!scan) redirect("/admin/scans");
 
   const detail = scan as unknown as ScanDetail;
+  const analysis = detail.skin_analysis;
 
   const statusBadge: "success" | "destructive" | "secondary" | "warning" =
     detail.status === "completed"
@@ -103,19 +70,22 @@ export default async function AdminScanDetailPage({
           : "warning";
 
   return (
-    <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-10">
-      <div className="flex items-center justify-between">
+    <div className="min-h-dvh bg-[#fcfaf7]">
+      <AdminTopbar />
+      <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <Link href="/admin/scans" className="text-sm text-muted-foreground hover:underline">
             ← Back
           </Link>
-          <h1 className="text-2xl font-bold">Scan {sessionId.slice(0, 8)}</h1>
+          <h1 className="admin-heading text-3xl">Scan {sessionId.slice(0, 8)}</h1>
           <Badge variant={statusBadge}>{detail.status}</Badge>
         </div>
+        {detail.status !== "deleted" && <AdminDownloadButton sessionId={sessionId} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
+      <div className="flex flex-col gap-6">
+        <Card className="admin-card overflow-hidden">
           <CardHeader>
             <CardTitle className="text-base">Media</CardTitle>
           </CardHeader>
@@ -126,18 +96,18 @@ export default async function AdminScanDetailPage({
               <>
                 <PrivateVideoPlayer sessionId={sessionId} />
                 {/* Frames are served through short-lived signed redirects. */}
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid gap-3 sm:grid-cols-3">
                   {["CENTER", "LEFT", "RIGHT"].map((step) => (
-                    <figure key={step} className="flex flex-col gap-1">
+                    <figure key={step} className="flex flex-col gap-1.5">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={`/api/admin/scans/${sessionId}/best-frame?step=${step}`}
                         alt={`${step} capture frame`}
-                        className="aspect-square w-full rounded-lg border object-cover"
+                        className="aspect-square w-full rounded-lg border border-[#eadbca] object-cover"
                         loading="lazy"
                       />
                       <figcaption className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                        {step}
+                        {step} frame
                       </figcaption>
                     </figure>
                   ))}
@@ -147,120 +117,153 @@ export default async function AdminScanDetailPage({
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="admin-card">
           <CardHeader>
-            <CardTitle className="text-base">Result</CardTitle>
+            <CardTitle className="text-base">Skin analysis</CardTitle>
           </CardHeader>
-          <CardContent className="flex flex-col gap-2 text-sm">
-            <p>
-              Age range:{" "}
-              <strong>
-                {detail.age_low !== null && detail.age_high !== null
-                  ? `${detail.age_low}–${detail.age_high}`
-                  : "—"}
-              </strong>
-            </p>
-            <p>Face confidence: {detail.face_confidence ?? "—"}</p>
-            <p>Challenge passed: {detail.custom_challenge_passed ? "Yes" : "No"}</p>
-            <p>Duration: {detail.duration_ms ? `${(detail.duration_ms / 1000).toFixed(1)}s` : "—"}</p>
-            <p>Retention until: {detail.retention_until ? new Date(detail.retention_until).toLocaleString() : "—"}</p>
-            {detail.failure_code && (
-              <p className="text-red-600">
-                Failure: {detail.failure_code} — {detail.failure_message}
+          <CardContent className="flex flex-col gap-6 text-sm">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="rounded-2xl border border-[#eadbca] bg-[#fdf8f2] px-5 py-3">
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#a9703e]">
+                  Skin age
+                </p>
+                <p className="mt-1 font-serif text-4xl font-medium leading-none text-[#3c2718]">
+                  {detail.skin_age ?? "—"}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Chip label="Status" value={detail.skin_status ?? "—"} />
+                <Chip label="Type" value={analysis?.skinType ?? "—"} />
+                <Chip
+                  label="Confidence"
+                  value={
+                    analysis?.confidence !== undefined
+                      ? `${Math.round(analysis.confidence * 100)}%`
+                      : "—"
+                  }
+                />
+              </div>
+            </div>
+
+            {analysis?.summary && (
+              <p className="border-l-2 border-[#e2cba9] pl-4 leading-6 text-stone-600">
+                {analysis.summary}
               </p>
             )}
-            {detail.status === "failed" && (
-              <AdminRetryButton sessionId={sessionId} />
+
+            {analysis?.scores && (
+              <div className="border-t border-[#f0e6da] pt-5">
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#a9703e]">
+                  Scores
+                </p>
+                <div className="mt-4 grid gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {orderScores(analysis.scores).map(([key, value]) => (
+                    <div key={key}>
+                      <div className="flex items-baseline justify-between text-xs">
+                        <span className="capitalize text-stone-600">{key}</span>
+                        <span className="font-mono font-semibold tabular-nums text-[#3c2718]">
+                          {value}
+                          <span className="text-stone-400">/100</span>
+                        </span>
+                      </div>
+                      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[#f3e7da]">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-[#b9824e] to-[#d5a568]"
+                          style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* The model returns these too; they were being thrown away. */}
+            {(analysis?.highlights?.length ||
+              analysis?.concerns?.length ||
+              analysis?.tips?.length) && (
+              <div className="grid gap-3 border-t border-[#f0e6da] pt-5 sm:grid-cols-3">
+                <StringList title="Highlights" items={analysis?.highlights} tone="good" />
+                <StringList title="Concerns" items={analysis?.concerns} tone="watch" />
+                <StringList title="Tips" items={analysis?.tips} tone="neutral" />
+              </div>
             )}
           </CardContent>
         </Card>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Skin analysis</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2 text-sm">
-          <p>
-            Status: <strong>{detail.skin_status ?? "—"}</strong>
-            {detail.skin_provider ? ` · ${detail.skin_provider}` : ""}
-            {detail.skin_model ? ` (${detail.skin_model})` : ""}
-          </p>
-          <p>
-            Skin age: <strong>{detail.skin_age ?? "—"}</strong>
-          </p>
-          {detail.skin_analysis?.summary && (
-            <p className="text-muted-foreground">{detail.skin_analysis.summary}</p>
+      {/* The Result card is gone, but a failed scan still has to explain itself
+          and offer the re-run — kept inline so no capability was dropped with
+          the card. */}
+      {(detail.failure_code || detail.status === "failed") && (
+        <div className="flex flex-col gap-3 rounded-xl border border-[#e8c9c9] bg-[#fdf5f4] px-4 py-3">
+          {detail.failure_code && (
+            <p className="text-sm text-red-700">
+              Failure: {detail.failure_code}
+              {detail.failure_message ? ` — ${detail.failure_message}` : ""}
+            </p>
           )}
-          {detail.skin_analysis?.scores && (
-            <div className="flex flex-wrap gap-2 pt-1">
-              {Object.entries(detail.skin_analysis.scores).map(([key, value]) => (
-                <span key={key} className="rounded-md border px-2 py-1 text-xs">
-                  {key}: {value}
-                </span>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Direction steps</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col gap-2 text-sm">
-            {(detail.scan_steps ?? []).map((step) => (
-              <div key={step.step} className="flex items-center justify-between rounded-md border px-3 py-2">
-                <span className="font-medium">
-                  {step.stepOrder}. {step.step}
-                </span>
-                <span className="text-muted-foreground">
-                  {step.passed ? "Passed" : "Failed"} · hold {step.hold_ms}ms · yaw{" "}
-                  {step.representative_yaw}° · pitch {step.representative_pitch}° · roll{" "}
-                  {step.representative_roll}°
-                </span>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">S3 objects</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-            {(detail.scan_assets ?? []).map((asset) => (
-              <p key={asset.id}>
-                {asset.kind}
-                {asset.step ? ` [${asset.step}]` : ""}: {asset.object_key} ({asset.byte_size} bytes,{" "}
-                {asset.mime_type})
-              </p>
-            ))}
-            {(detail.scan_assets ?? []).length === 0 && <p>No objects recorded.</p>}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Audit events</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-            {(detail.scan_audit_events ?? []).map((event) => (
-              <p key={event.id}>
-                {new Date(event.created_at).toLocaleString()} — {event.event_type}
-              </p>
-            ))}
-            {(detail.scan_audit_events ?? []).length === 0 && <p>No events recorded.</p>}
-          </div>
-        </CardContent>
-      </Card>
+          {detail.status === "failed" && <AdminRetryButton sessionId={sessionId} />}
+        </div>
+      )}
 
       <AdminDeleteButton sessionId={sessionId} />
-    </main>
+      </main>
+    </div>
+  );
+}
+
+/** Reading order used across the product, rather than whatever key order the
+ *  model happened to emit. Unrecognised keys keep their position at the end. */
+const SCORE_ORDER = ["hydration", "texture", "evenness", "radiance", "firmness"];
+
+function orderScores(scores: Record<string, number>): Array<[string, number]> {
+  const rank = (key: string) => {
+    const i = SCORE_ORDER.indexOf(key.toLowerCase());
+    return i === -1 ? SCORE_ORDER.length : i;
+  };
+  return Object.entries(scores).sort((a, b) => rank(a[0]) - rank(b[0]));
+}
+
+function Chip({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-[#eadbca] bg-white px-3 py-1.5">
+      <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#a9703e]">
+        {label}
+      </span>
+      <span className="text-sm font-medium capitalize text-[#3c2718]">{value}</span>
+    </span>
+  );
+}
+
+const LIST_TONES = {
+  good: { panel: "border-[#d9e2d8] bg-[#f6faf5]", title: "text-[#4d6b52]", mark: "text-[#7d9a81]" },
+  watch: { panel: "border-[#eedcc4] bg-[#fdf7ee]", title: "text-[#a9703e]", mark: "text-[#c08d55]" },
+  neutral: { panel: "border-[#eadbca] bg-[#fdfbf8]", title: "text-[#8b735f]", mark: "text-[#b6a08c]" },
+} as const;
+
+function StringList({
+  title,
+  items,
+  tone,
+}: {
+  title: string;
+  items?: string[];
+  tone: keyof typeof LIST_TONES;
+}) {
+  if (!items || items.length === 0) return null;
+  const styles = LIST_TONES[tone];
+  return (
+    <div className={`rounded-xl border p-4 ${styles.panel}`}>
+      <p className={`font-mono text-[10px] uppercase tracking-[0.18em] ${styles.title}`}>{title}</p>
+      <ul className="mt-2.5 flex flex-col gap-2">
+        {items.map((item) => (
+          <li key={item} className="flex gap-2 text-sm leading-relaxed text-stone-600">
+            <span className={styles.mark}>▸</span>
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

@@ -44,7 +44,7 @@ export function CameraPreview({
   return (
     <video
       ref={videoRef}
-      className="h-full w-full -scale-x-100 object-cover"
+      className="h-full w-full -scale-x-100 bg-[#f5e8db] object-cover"
       playsInline
       muted
       autoPlay

@@ -1,9 +1,9 @@
 "use client";
 
-
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { Glasses } from "lucide-react";
 import { saveFormState, getFormState } from "@/lib/storage/scan-storage";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -15,15 +15,10 @@ const consentSchema = z.object({
   subjectName: z.string().min(1, "Name is required"),
   subjectEmail: z.string().min(1, "Email is required").email("Enter a valid email address"),
   subjectPhone: z.string().min(1, "Phone number is required"),
-  consentGiven: z.boolean().refine((v) => v, {
-    message: "You must consent to the recording and age-range analysis.",
+  consentGiven: z.boolean().refine((value) => value, {
+    message: "Please confirm your consent to continue.",
   }),
-  adultDeclaration: z.boolean().refine((v) => v, {
-    message: "You must confirm you are 18 or older.",
-  }),
-  acknowledgeApproximate: z.boolean().refine((v) => v, {
-    message: "You must acknowledge that results are approximate.",
-  }),
+  adultDeclaration: z.literal(true),
 });
 
 export type ConsentValues = z.infer<typeof consentSchema>;
@@ -35,18 +30,11 @@ function getSavedDefaultValues(): ConsentValues {
     subjectEmail: saved.subjectEmail ?? "",
     subjectPhone: saved.subjectPhone ?? "",
     consentGiven: false,
-    adultDeclaration: false,
-    acknowledgeApproximate: false,
+    adultDeclaration: true,
   };
 }
 
-export function ConsentForm({
-  onConsent,
-  busy,
-}: {
-  onConsent: (values: ConsentValues) => void;
-  busy?: boolean;
-}) {
+export function ConsentForm({ onConsent, busy }: { onConsent: (values: ConsentValues) => void; busy?: boolean }) {
   const {
     register,
     handleSubmit,
@@ -59,32 +47,23 @@ export function ConsentForm({
   });
 
   const consentGiven = useWatch({ control, name: "consentGiven" });
-  const adultDeclaration = useWatch({ control, name: "adultDeclaration" });
-  const acknowledgeApproximate = useWatch({ control, name: "acknowledgeApproximate" });
-
-  const toggle = (name: keyof ConsentValues) => (checked: boolean) => {
-    setValue(name, checked as never);
-  };
+  const setConsent = (checked: boolean) => setValue("consentGiven", checked, { shouldValidate: true });
 
   return (
-    <Card className="hud-panel w-full max-w-lg rounded-3xl">
+    <Card className="w-full max-w-lg rounded-3xl border-[#eadbca] bg-white shadow-[0_20px_50px_rgba(72,43,24,0.10)]">
       <CardHeader>
-        <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-cyan-300/80">
-          Mission briefing
-        </p>
-        <CardTitle className="text-2xl">Before you start</CardTitle>
-        <CardDescription>
-          You will record three short clips — looking straight ahead, then left, then right. They
-          are used to estimate an approximate age band and a cosmetic skin-age reading. Skin scoring
-          sends your captured frames to an external AI provider for analysis.
+        <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-[#a9703e]">Before your scan</p>
+        <CardTitle className="font-serif text-3xl font-semibold text-[#3c2718]">Before you start</CardTitle>
+        <CardDescription className="leading-6 text-[#755d4a]">
+          Three quick clips help create your skin reading. It takes about 20 seconds.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="rounded-2xl border border-amber-400/30 bg-amber-950/40 p-3.5 flex items-start gap-3">
-          <span className="text-xl">👓</span>
-          <div className="text-xs leading-relaxed text-amber-200/90">
-            <strong className="block text-amber-300 font-semibold mb-0.5">Please remove your glasses</strong>
-            For accurate skin scoring and face calibration, please remove any glasses, sunglasses, or face coverings before starting the scan.
+        <div className="flex items-start gap-3 rounded-2xl border border-[#e5c49f] bg-[#fff7ed] p-3.5">
+          <Glasses className="mt-0.5 h-5 w-5 shrink-0 text-[#a9703e]" aria-hidden="true" />
+          <div className="text-xs leading-relaxed text-[#755d4a]">
+            <strong className="mb-0.5 block font-semibold text-[#7d4f29]">Please remove your glasses</strong>
+            Remove glasses, sunglasses, or face coverings for a clearer scan.
           </div>
         </div>
 
@@ -99,69 +78,27 @@ export function ConsentForm({
           })}
           className="flex flex-col gap-4"
         >
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="subjectName">Name *</Label>
+          <Field label="Name" id="subjectName" error={errors.subjectName?.message}>
             <Input id="subjectName" placeholder="Your name" {...register("subjectName")} />
-            {errors.subjectName && (
-              <p className="text-sm text-rose-400">{errors.subjectName.message}</p>
-            )}
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="subjectEmail">Email *</Label>
+          </Field>
+          <Field label="Email" id="subjectEmail" error={errors.subjectEmail?.message}>
             <Input id="subjectEmail" type="email" placeholder="you@example.com" {...register("subjectEmail")} />
-            {errors.subjectEmail && (
-              <p className="text-sm text-rose-400">{errors.subjectEmail.message}</p>
-            )}
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="subjectPhone">Phone *</Label>
+          </Field>
+          <Field label="Phone" id="subjectPhone" error={errors.subjectPhone?.message}>
             <Input id="subjectPhone" type="tel" placeholder="+91…" {...register("subjectPhone")} />
-            {errors.subjectPhone && (
-              <p className="text-sm text-rose-400">{errors.subjectPhone.message}</p>
-            )}
-          </div>
+          </Field>
 
           <div className="flex items-start gap-2">
-            <Checkbox
-              id="consentGiven"
-              checked={Boolean(consentGiven)}
-              onCheckedChange={toggle("consentGiven")}
-            />
-            <Label htmlFor="consentGiven" className="font-normal leading-snug">
-              I consent to three short video clips being recorded and analyzed for an estimated age
-              range and a cosmetic skin-age reading.
+            <Checkbox id="consentGiven" checked={Boolean(consentGiven)} onCheckedChange={setConsent} />
+            <Label htmlFor="consentGiven" className="font-normal leading-snug text-[#624d3d]">
+              I am 18 or older and consent to this face scan. See the{" "}
+              <a href="/privacy" className="font-medium text-[#7d4f29] underline underline-offset-2 hover:text-[#3c2718]" onClick={(event) => event.stopPropagation()}>
+                Privacy Policy
+              </a>{" "}
+              for details.
             </Label>
           </div>
-          {errors.consentGiven && <p className="text-sm text-rose-400">{errors.consentGiven.message}</p>}
-
-          <div className="flex items-start gap-2">
-            <Checkbox
-              id="adultDeclaration"
-              checked={Boolean(adultDeclaration)}
-              onCheckedChange={toggle("adultDeclaration")}
-            />
-            <Label htmlFor="adultDeclaration" className="font-normal leading-snug">
-              I confirm I am 18 or older.
-            </Label>
-          </div>
-          {errors.adultDeclaration && (
-            <p className="text-sm text-rose-400">{errors.adultDeclaration.message}</p>
-          )}
-
-          <div className="flex items-start gap-2">
-            <Checkbox
-              id="acknowledgeApproximate"
-              checked={Boolean(acknowledgeApproximate)}
-              onCheckedChange={toggle("acknowledgeApproximate")}
-            />
-            <Label htmlFor="acknowledgeApproximate" className="font-normal leading-snug">
-              I acknowledge the results are approximate, are for fun, and are not medical advice or
-              proof of age.
-            </Label>
-          </div>
-          {errors.acknowledgeApproximate && (
-            <p className="text-sm text-rose-400">{errors.acknowledgeApproximate.message}</p>
-          )}
+          {errors.consentGiven && <p className="text-sm text-[#9e3d3d]">{errors.consentGiven.message}</p>}
 
           <Button type="submit" disabled={busy} className="mt-2 h-12 rounded-full font-bold">
             {busy ? "Starting…" : "Start face scan"}
@@ -169,5 +106,15 @@ export function ConsentForm({
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+function Field({ label, id, error, children }: { label: string; id: string; error?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <Label htmlFor={id}>{label} *</Label>
+      {children}
+      {error && <p className="text-sm text-[#9e3d3d]">{error}</p>}
+    </div>
   );
 }

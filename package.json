@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "copy:mediapipe": "node scripts/copy-mediapipe-assets.mjs",
     "upload:wasm": "node scripts/upload-wasm-to-tigris.mjs",
-    "seed:admin": "node scripts/seed-admin.mjs"
+    "seed:admin": "node scripts/seed-admin.mjs",
+    "delete:face": "node scripts/delete-face-scans.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "^3.1101.0",
@@ -32,6 +33,7 @@
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jszip": "^3.10.1",
     "lucide-react": "^1.28.0",
     "next": "16.2.12",
     "react": "19.2.4",

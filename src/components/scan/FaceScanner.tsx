@@ -16,6 +16,8 @@ import { reducer, initialState } from "@/lib/face/challenge-reducer";
 import { STEP_CONDITIONS } from "@/lib/face/quality";
 import { computeFrameScore } from "@/lib/face/frame-score";
 import { computeSharpness, computeLuminance } from "@/lib/face/canvas-quality";
+import { measureBand, scoreEyewear } from "@/lib/face/eyewear";
+import { insideGuideRatio, MIN_INSIDE_GUIDE_RATIO, type GuideEllipse } from "@/lib/face/guide";
 import type { MeshTone } from "@/lib/face/mesh";
 import { startSegmentRecorder, type SegmentRecorder, type RecordingSession } from "@/lib/scan/media-recorder";
 import { loadImageFromVideo, cropFaceCanvas, canvasToJpeg } from "@/lib/scan/best-frame";
@@ -27,6 +29,7 @@ import { FaceMeshOverlay, type MeshFrame } from "./FaceMeshOverlay";
 import { DirectionInstruction } from "./DirectionInstruction";
 import { ScanProgress } from "./ScanProgress";
 import { UploadProgress } from "./UploadProgress";
+import { TurnCue } from "./TurnCue";
 import { Button } from "@/components/ui/button";
 
 type ScanPhase = "preparing" | "active" | "uploading" | "done" | "error";
@@ -42,6 +45,20 @@ const EMPTY_SCORES: Record<ChallengeStep, number> = { CENTER: 0, LEFT: 0, RIGHT:
 
 /** At most one full-resolution still encode per this interval, per direction. */
 const CAPTURE_THROTTLE_MS = 140;
+
+/**
+ * Consecutive flagged frames before eyewear is called. At ~15 FPS this is about
+ * half a second of agreement, which a blink or a head wobble cannot fake.
+ */
+const EYEWEAR_CONSECUTIVE_FRAMES = 8;
+
+/**
+ * Set NEXT_PUBLIC_SCAN_DEBUG=1 to show the live eyewear measurements on the
+ * scanner. The thresholds in lib/face/eyewear.ts can only be set properly by
+ * reading these off a real face, with and without glasses.
+ */
+const SCAN_DEBUG = process.env.NEXT_PUBLIC_SCAN_DEBUG === "1";
+const EYEWEAR_DEBUG_INTERVAL_MS = 400;
 
 /**
  * Grace period after the last clip for outstanding still encodes to land before
@@ -117,6 +134,12 @@ export function FaceScanner({
   const uploadStartedRef = useRef(false);
   const recordingAnnouncedRef = useRef(false);
   const analysisCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** The oval the overlay is drawing, in normalized video coordinates. */
+  const guideRef = useRef<GuideEllipse | null>(null);
+  /** Consecutive frames the eyewear check has agreed on. */
+  const eyewearFlagRef = useRef(0);
+  const [eyewearDebug, setEyewearDebug] = useState<string | null>(null);
+  const eyewearDebugAtRef = useRef(0);
 
   // Session id may arrive asynchronously from the parent.
   useEffect(() => {
@@ -346,14 +369,14 @@ export function FaceScanner({
 
     // Feed the structure overlay even when quality is poor, so the user can
     // see the mesh lock on while they adjust.
-    meshFrameRef.current =
-      faceCount >= 1
-        ? {
-            landmarks: faces[0].map((p) => ({ x: p.x, y: p.y })),
-            videoWidth: frameWidth,
-            videoHeight: frameHeight,
-          }
-        : null;
+    // Dimensions are published even with no face, so the overlay can project
+    // the guide through the same cover transform from the very first frame
+    // instead of snapping into place once a face appears.
+    meshFrameRef.current = {
+      landmarks: faceCount >= 1 ? faces[0].map((p) => ({ x: p.x, y: p.y })) : [],
+      videoWidth: frameWidth,
+      videoHeight: frameHeight,
+    };
 
     if (faceCount === 1) {
       const lm0 = faces[0];
@@ -407,6 +430,80 @@ export function FaceScanner({
           ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, targetW, targetH);
           luminance = computeLuminance(ctx, targetW, targetH);
           sharpness = computeSharpness(ctx, targetW, targetH);
+
+          // Eyewear check. Landmarks are normalised to the video frame, so they
+          // are mapped through the same crop that produced this canvas.
+          const toCanvas = (point: { x: number; y: number }) => ({
+            x: ((point.x * frameWidth - cropX) / cropW) * targetW,
+            y: ((point.y * frameHeight - cropY) / cropH) * targetH,
+          });
+
+          // 33/263 outer eye corners, 105/334 brow tops, 145/374 under-eye,
+          // 2 nose base — the cheek reference sits between the eyes and nose.
+          const outerL = toCanvas(lm0[33]);
+          const outerR = toCanvas(lm0[263]);
+          const browTop = Math.min(toCanvas(lm0[105]).y, toCanvas(lm0[334]).y);
+          const underEye = Math.max(toCanvas(lm0[145]).y, toCanvas(lm0[374]).y);
+          const noseBase = toCanvas(lm0[2]).y;
+
+          const bandX = Math.min(outerL.x, outerR.x);
+          const bandWidth = Math.abs(outerR.x - outerL.x);
+          const eyeHeight = underEye - browTop;
+          const cheekTop = underEye + eyeHeight * 0.25;
+
+          const eye =
+            eyeHeight > 1
+              ? measureBand(
+                  ctx,
+                  { x: bandX, y: browTop, width: bandWidth, height: eyeHeight },
+                  targetW,
+                  targetH
+                )
+              : null;
+          const cheek =
+            noseBase > cheekTop
+              ? measureBand(
+                  ctx,
+                  {
+                    x: bandX,
+                    y: cheekTop,
+                    width: bandWidth,
+                    height: noseBase - cheekTop,
+                  },
+                  targetW,
+                  targetH
+                )
+              : null;
+
+          if (eye && cheek) {
+            const verdict = scoreEyewear({ eye, cheek });
+            const wasFlagged = eyewearFlagRef.current >= EYEWEAR_CONSECUTIVE_FRAMES;
+            // Require agreement across frames: a single blink or head wobble
+            // should never be enough to accuse someone of wearing glasses.
+            eyewearFlagRef.current = verdict.likely
+              ? Math.min(EYEWEAR_CONSECUTIVE_FRAMES, eyewearFlagRef.current + 1)
+              : 0;
+            const isFlagged = eyewearFlagRef.current >= EYEWEAR_CONSECUTIVE_FRAMES;
+            if (isFlagged !== wasFlagged) {
+              pushLog(
+                `eyewear ${isFlagged ? "detected" : "cleared"} — edge ${verdict.edgeRatio.toFixed(2)}x, dev ${verdict.luminanceDeviation.toFixed(3)}`
+              );
+            }
+
+            // Live readout for threshold calibration. Throttled: this is the
+            // only setState on the 15 FPS inference path.
+            if (SCAN_DEBUG) {
+              const now = performance.now();
+              if (now - eyewearDebugAtRef.current > EYEWEAR_DEBUG_INTERVAL_MS) {
+                eyewearDebugAtRef.current = now;
+                setEyewearDebug(
+                  `edge ${verdict.edgeRatio.toFixed(2)}x · dev ${verdict.luminanceDeviation.toFixed(3)} · ${
+                    verdict.likely ? "HIT" : "miss"
+                  } ${eyewearFlagRef.current}/${EYEWEAR_CONSECUTIVE_FRAMES}`
+                );
+              }
+            }
+          }
         }
       }
 
@@ -414,35 +511,17 @@ export function FaceScanner({
       const ratio = (box.width * box.height) / area;
       if (ratio < SCAN_CONFIG.faceAreaMinRatio) qualityMessage = "move_closer";
       else if (ratio > SCAN_CONFIG.faceAreaMaxRatio) qualityMessage = "move_farther";
-      else if (
-        Math.abs(box.x + box.width / 2 - frameWidth / 2) / frameWidth > SCAN_CONFIG.maxCenterOffsetRatio ||
-        Math.abs(box.y + box.height / 2 - frameHeight / 2) / frameHeight > SCAN_CONFIG.maxCenterOffsetRatio
-      ) {
+      // Containment in the oval the user can actually see, rather than a
+      // separate invisible box that let an off-frame face record. The overlay
+      // publishes its drawn geometry; the default covers the first few frames.
+      else if (insideGuideRatio(lm0, guideRef.current ?? undefined) < MIN_INSIDE_GUIDE_RATIO) {
         qualityMessage = "center_face";
       } else if (luminance !== undefined && (luminance < 0.2 || luminance > 0.85)) {
         qualityMessage = "improve_lighting";
       } else if (sharpness !== undefined && sharpness < 0.02) {
         qualityMessage = "hold_steady";
-      } else {
-        // Glasses / obstruction detection via face blendshapes.
-        const blendshapes = result.faceBlendshapes?.[0]?.categories;
-        if (blendshapes) {
-          const get = (name: string) =>
-            blendshapes.find((b: { categoryName: string }) => b.categoryName === name)?.score ?? 0;
-
-          const squintL = get("eyeSquintLeft");
-          const squintR = get("eyeSquintRight");
-          const blinkL = get("eyeBlinkLeft");
-          const blinkR = get("eyeBlinkRight");
-
-          const avgSquint = (squintL + squintR) / 2;
-          const avgBlink = (blinkL + blinkR) / 2;
-          const glassesLikely = avgSquint > 0.45 && avgBlink < 0.10;
-
-          if (glassesLikely) {
-            qualityMessage = "obstruction_detected";
-          }
-        }
+      } else if (eyewearFlagRef.current >= EYEWEAR_CONSECUTIVE_FRAMES) {
+        qualityMessage = "obstruction_detected";
       }
     }
 
@@ -499,7 +578,7 @@ export function FaceScanner({
         frameHeight,
       },
     });
-  }, [landmarker, phase, captureFrameFor]);
+  }, [landmarker, phase, captureFrameFor, pushLog]);
 
   // -------------------------------------------------------------------------
   // Inference loop — starts when camera + model are ready.
@@ -896,8 +975,8 @@ export function FaceScanner({
     return (
       <ScanShell>
         <div className="flex flex-1 flex-col items-center justify-center gap-6 px-6 text-center">
-          <p className="font-mono text-xs uppercase tracking-[0.3em] text-rose-400">Scan aborted</p>
-          <p className="max-w-sm text-lg text-white/90">{cameraError ?? "Something went wrong."}</p>
+          <p className="font-mono text-xs uppercase tracking-[0.3em] text-[#9e3d3d]">Scan aborted</p>
+          <p className="max-w-sm text-lg text-[#3c2718]">{cameraError ?? "Something went wrong."}</p>
           <div className="flex flex-col gap-3 sm:flex-row">
             <Button
               onClick={() => {
@@ -908,7 +987,7 @@ export function FaceScanner({
                 clearActiveSession();
                 window.location.reload();
               }}
-              className="h-12 rounded-full bg-cyan-400 px-8 font-semibold text-slate-950 hover:bg-cyan-300"
+              className="h-12 rounded-full bg-[#351d0f] px-8 font-semibold text-white hover:bg-[#4b2a16]"
             >
               Try again
             </Button>
@@ -916,7 +995,7 @@ export function FaceScanner({
               <Button
                 variant="ghost"
                 onClick={onExit}
-                className="h-12 rounded-full px-8 text-white/70 hover:bg-white/10 hover:text-white"
+                className="h-12 rounded-full px-8 text-[#755d4a] hover:bg-[#f7f0e8] hover:text-[#3c2718]"
               >
                 Exit
               </Button>
@@ -924,10 +1003,10 @@ export function FaceScanner({
           </div>
           {/* Debug log on error screen */}
           {debugLog.length > 0 && (
-            <div className="mt-6 max-h-48 w-full max-w-sm overflow-y-auto rounded-lg border border-white/10 bg-black/60 p-3 text-left">
-              <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-cyan-400/60">Debug Log</p>
+            <div className="mt-6 max-h-48 w-full max-w-sm overflow-y-auto rounded-lg border border-[#eadbca] bg-white p-3 text-left">
+              <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-[#a9703e]">Debug Log</p>
               {debugLog.map((line, i) => (
-                <p key={i} className="font-mono text-[10px] leading-relaxed text-white/50">{line}</p>
+                <p key={i} className="font-mono text-[10px] leading-relaxed text-[#755d4a]">{line}</p>
               ))}
             </div>
           )}
@@ -954,51 +1033,66 @@ export function FaceScanner({
       <div className="absolute inset-0">
         <CameraPreview stream={stream} onVideoReady={handleVideoReady} />
         <div className="pointer-events-none absolute inset-0">
-          <FaceMeshOverlay source={meshFrameRef} tone={tone} />
+          <FaceMeshOverlay source={meshFrameRef} tone={tone} guideRef={guideRef} />
         </div>
         {/* Readability scrim behind the HUD */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-56 bg-gradient-to-b from-slate-950/90 to-transparent" />
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-72 bg-gradient-to-t from-slate-950/95 via-slate-950/70 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-[#fcfaf7]/95 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-56 bg-gradient-to-t from-[#fcfaf7]/95 via-[#fcfaf7]/60 to-transparent" />
       </div>
 
-      {/* Top HUD */}
-      <header className="relative z-10 flex items-start justify-between px-5 pt-[max(1rem,env(safe-area-inset-top))]">
-        <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-cyan-300/80">
-            Find your skin age
-          </p>
-          <p className="mt-1 text-sm font-medium text-white/70">
-            {phase === "preparing" ? "Calibrating scanner" : "Scan in progress"}
-          </p>
+      {/* Top HUD — a compact centred console. Full-width panels left the face
+          almost no room on desktop, so the chrome is capped and the video keeps
+          the rest of the viewport. */}
+      <div className="relative z-10 mx-auto w-full max-w-2xl px-4 sm:px-5">
+        <header className="mt-[max(0.75rem,env(safe-area-inset-top))] flex items-center justify-between gap-3 rounded-2xl border border-[#eadbca] bg-white/95 px-4 py-2.5 shadow-sm backdrop-blur">
+          <div className="min-w-0">
+            <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-[#a9703e]">
+              Find your skin age
+            </p>
+            <p className="mt-0.5 truncate text-sm font-medium text-[#755d4a]">
+              {phase === "preparing" ? "Calibrating scanner" : "Scan in progress"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={cancel}
+            aria-label="Exit scan"
+            className="shrink-0 rounded-full border border-[#decbb8] bg-white p-2 text-[#755d4a] transition hover:bg-[#fff7ed] hover:text-[#3c2718]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+
+        <div className="mt-2.5">
+          <ScanProgress
+            currentIndex={state.stepIndex}
+            capturedSteps={capturedSteps}
+            recordingStep={recordingStep}
+            flashStep={flashStep}
+            holdRatio={holdRatio}
+          />
         </div>
-        <button
-          type="button"
-          onClick={cancel}
-          aria-label="Exit scan"
-          className="rounded-full border border-white/15 bg-white/5 p-2.5 text-white/80 backdrop-blur transition hover:bg-white/15 hover:text-white"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </header>
-
-      <div className="relative z-10 mt-5 px-5">
-        <ScanProgress
-          currentIndex={state.stepIndex}
-          capturedSteps={capturedSteps}
-          recordingStep={recordingStep}
-          flashStep={flashStep}
-          holdRatio={holdRatio}
-        />
       </div>
+
+      {SCAN_DEBUG && eyewearDebug && (
+        <div className="pointer-events-none absolute bottom-40 left-4 z-30 rounded-lg bg-[#2a1710]/85 px-3 py-2 font-mono text-[10px] leading-relaxed text-[#f3e2cd]">
+          eyewear: {eyewearDebug}
+        </div>
+      )}
+
+      {/* Side cue on tablet and up; the phone version sits above the panel. */}
+      {phase === "active" && countdown === null && (
+        <TurnCue step={state.currentStep} placement="edge" />
+      )}
 
       {/* Countdown takeover */}
       {countdown !== null && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm">
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#fcfaf7]/75 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-3">
-            <span className="font-mono text-[11px] uppercase tracking-[0.35em] text-cyan-300">
+            <span className="font-mono text-[11px] uppercase tracking-[0.35em] text-[#a9703e]">
               Get ready
             </span>
-            <span className="text-8xl font-bold tabular-nums text-white drop-shadow-[0_0_25px_rgba(56,189,248,0.6)]">
+            <span className="font-serif text-8xl font-semibold tabular-nums text-[#3c2718] drop-shadow-[0_8px_16px_rgba(185,130,78,0.25)]">
               {Math.ceil(countdown)}
             </span>
           </div>
@@ -1006,17 +1100,21 @@ export function FaceScanner({
       )}
 
       {/* Bottom instruction panel */}
-      <footer className="relative z-10 mt-auto px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+      <footer className="relative z-10 mx-auto mt-auto w-full max-w-2xl px-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-5">
         {phase === "preparing" && stalled && countdown === null && (
           <div className="mb-3 flex justify-center">
             <Button
               onClick={startAnyway}
-              className="h-11 rounded-full bg-cyan-400 px-6 text-sm font-semibold text-slate-950 hover:bg-cyan-300"
+              className="h-11 rounded-full bg-[#351d0f] px-6 text-sm font-semibold text-white hover:bg-[#4b2a16]"
             >
               Start scan anyway
             </Button>
           </div>
         )}
+        {phase === "active" && countdown === null && (
+          <TurnCue step={state.currentStep} placement="inline" />
+        )}
+
         <DirectionInstruction
           step={state.currentStep}
           qualityMessage={qualityMessage ?? undefined}
@@ -1025,20 +1123,20 @@ export function FaceScanner({
           preparing={phase === "preparing"}
         />
         {landmarkerError && (
-          <p className="mt-3 text-center text-sm text-rose-400">{landmarkerError}</p>
+          <p className="mt-3 text-center text-sm text-[#9e3d3d]">{landmarkerError}</p>
         )}
       </footer>
 
       {/* Low camera quality warning banner */}
       {cameraWarning && (
-        <div className="absolute inset-x-0 top-[max(3.5rem,env(safe-area-inset-top,3.5rem))] z-30 mx-4 animate-in fade-in slide-in-from-top-2 duration-300">
-          <div className="relative flex items-start gap-2.5 rounded-xl border border-amber-400/30 bg-amber-950/80 px-4 py-3 backdrop-blur-md">
+        <div className="absolute inset-x-0 top-[max(8rem,env(safe-area-inset-top,8rem))] z-30 mx-auto w-full max-w-2xl animate-in fade-in slide-in-from-top-2 px-4 duration-300 sm:px-5">
+          <div className="relative flex items-start gap-2.5 rounded-xl border border-[#eedcc4] bg-[#fdf7ee]/95 px-4 py-3 shadow-[0_10px_24px_rgba(72,43,24,0.10)] backdrop-blur-md">
             <span className="mt-0.5 text-lg">⚠️</span>
-            <p className="flex-1 text-sm leading-snug text-amber-200">{cameraWarning}</p>
+            <p className="flex-1 text-sm leading-snug text-[#87572f]">{cameraWarning}</p>
             <button
               type="button"
               onClick={() => setCameraWarning(null)}
-              className="shrink-0 rounded-full p-1 text-amber-300/70 transition hover:bg-amber-300/20 hover:text-amber-200"
+              className="shrink-0 rounded-full p-1 text-[#a9703e] transition hover:bg-[#f3e7da] hover:text-[#3c2718]"
               aria-label="Dismiss camera warning"
             >
               <X className="h-3.5 w-3.5" />
@@ -1050,11 +1148,11 @@ export function FaceScanner({
   );
 }
 
-/** Full-viewport dark surface shared by every scanner phase. */
+/** Full-viewport surface shared by every scanner phase. */
 function ScanShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-slate-950 text-white">
-      <div className="scan-grid pointer-events-none absolute inset-0 opacity-[0.18]" aria-hidden="true" />
+    <div className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-[#fcfaf7] text-[#3c2718]">
+      <div className="scan-grid-warm pointer-events-none absolute inset-0" aria-hidden="true" />
       {children}
     </div>
   );

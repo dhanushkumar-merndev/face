@@ -1,27 +1,25 @@
 @import "tailwindcss";
 
-/* "Find Your Skin Age" runs on a dark arcade-console palette: deep slate
-   backdrop, cyan primary, emerald for success and rose for recording. */
 :root {
-  --background: #020617;
-  --foreground: #e8eefb;
-  --card: #0b1222;
-  --card-foreground: #e8eefb;
-  --muted: #111a2e;
-  --muted-foreground: #93a4c3;
-  --border: #1e293b;
-  --input: #1e293b;
-  --primary: #22d3ee;
-  --primary-foreground: #04121b;
-  --secondary: #141e33;
-  --secondary-foreground: #e8eefb;
-  --accent: #172135;
-  --accent-foreground: #e8eefb;
-  --destructive: #f43f5e;
-  --destructive-foreground: #fff1f3;
-  --success: #34d399;
-  --ring: #22d3ee;
-  --radius: 0.85rem;
+  --background: #fcfaf7;
+  --foreground: #3c2718;
+  --card: #ffffff;
+  --card-foreground: #3c2718;
+  --muted: #f7f0e8;
+  --muted-foreground: #7c6351;
+  --border: #eadbca;
+  --input: #decbb8;
+  --primary: #351d0f;
+  --primary-foreground: #fffdf9;
+  --secondary: #f3e7da;
+  --secondary-foreground: #3c2718;
+  --accent: #faf1e8;
+  --accent-foreground: #3c2718;
+  --destructive: #9e3d3d;
+  --destructive-foreground: #fff8f7;
+  --success: #5f7c63;
+  --ring: #b9824e;
+  --radius: 1rem;
 }
 
 @theme inline {
@@ -64,9 +62,7 @@
   }
 }
 
-/* ---------------------------------------------------------------------------
-   Arcade HUD utilities
-   --------------------------------------------------------------------------- */
+/* Scanner and result utilities */
 
 /* Faint technical grid used behind the scanner and hero sections. */
 .scan-grid {
@@ -78,11 +74,157 @@
   -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 78%);
 }
 
+/* Warm variant of the grid for the cream landing surface — the cyan version
+   reads cold against the editorial palette. */
+.scan-grid-warm {
+  background-image:
+    linear-gradient(to right, rgba(169, 112, 62, 0.09) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(169, 112, 62, 0.09) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at 50% 30%, black 10%, transparent 70%);
+  -webkit-mask-image: radial-gradient(ellipse at 50% 30%, black 10%, transparent 70%);
+}
+
+/* Landing artwork: beam sweeping down the emblem face, in viewBox units. */
+@keyframes scan-sweep {
+  0% {
+    transform: translateY(18px);
+    opacity: 0;
+  }
+  12%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(206px);
+    opacity: 0;
+  }
+}
+
+.animate-scan-sweep {
+  animation: scan-sweep 3.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes orbit-dash {
+  to {
+    stroke-dashoffset: -216;
+  }
+}
+
+.animate-orbit-dash {
+  animation: orbit-dash 14s linear infinite;
+}
+
+/* Turn cue: chevrons pulse outward in the direction being asked for, and the
+   head glyph tilts the same way. Base state is fully opaque so that reduced
+   motion leaves a readable static arrow rather than a faded one. */
+@keyframes cue-left {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: translateX(4px);
+  }
+  45% {
+    opacity: 1;
+    transform: translateX(-4px);
+  }
+}
+
+@keyframes cue-right {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: translateX(-4px);
+  }
+  45% {
+    opacity: 1;
+    transform: translateX(4px);
+  }
+}
+
+.animate-cue-left {
+  animation: cue-left 1.5s ease-in-out infinite;
+}
+
+.animate-cue-right {
+  animation: cue-right 1.5s ease-in-out infinite;
+}
+
+/* The arrow badge slides without fading — a blinking badge reads as an error,
+   and this one has to stay solid enough to see against a live camera feed. */
+@keyframes cue-nudge-left {
+  0%,
+  100% {
+    transform: translateX(4px);
+  }
+  50% {
+    transform: translateX(-4px);
+  }
+}
+
+@keyframes cue-nudge-right {
+  0%,
+  100% {
+    transform: translateX(-4px);
+  }
+  50% {
+    transform: translateX(4px);
+  }
+}
+
+.animate-cue-nudge-left {
+  animation: cue-nudge-left 1.5s ease-in-out infinite;
+}
+
+.animate-cue-nudge-right {
+  animation: cue-nudge-right 1.5s ease-in-out infinite;
+}
+
+@keyframes halo-pulse {
+  0% {
+    transform: scale(0.94);
+    opacity: 0.6;
+  }
+  70%,
+  100% {
+    transform: scale(1.28);
+    opacity: 0;
+  }
+}
+
+.animate-halo {
+  animation: halo-pulse 2.8s ease-out infinite;
+}
+
 /* Glass panel used by HUD cards and result tiles. */
 .hud-panel {
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 253, 249, 0.18);
+  background: rgba(255, 253, 249, 0.08);
   backdrop-filter: blur(16px);
+}
+
+/* Editorial clinical styling used throughout the protected review area. */
+.admin-card {
+  border-color: #eadbca;
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgba(72, 43, 24, 0.055);
+}
+
+.admin-eyebrow {
+  color: #a9703e;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.admin-heading {
+  color: #3c2718;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2rem, 4vw, 3rem);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1;
 }
 
 @keyframes hud-rise {

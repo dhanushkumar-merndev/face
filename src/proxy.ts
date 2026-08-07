@@ -26,7 +26,13 @@ export function proxy(request: NextRequest) {
 
   // Admin guard (UX only; real authorization happens in route handlers).
   if (pathname.startsWith(ADMIN_PATH) && !PUBLIC_ADMIN_PATHS.some((p) => pathname.startsWith(p))) {
-    const hasSession = request.cookies.has("sb-auth-token") || request.cookies.has("sb-");
+    // @supabase/ssr names the cookie `sb-<project-ref>-auth-token`, and chunks
+    // it into `...auth-token.0`, `...auth-token.1` once the token gets large.
+    // An exact-name lookup never matches, which bounced every signed-in admin
+    // straight back to the login page.
+    const hasSession = request.cookies
+      .getAll()
+      .some((cookie) => cookie.name.startsWith("sb-") && cookie.name.includes("auth-token"));
     if (!hasSession) {
       const url = request.nextUrl.clone();
       url.pathname = "/admin/login";

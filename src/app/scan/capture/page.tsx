@@ -82,21 +82,19 @@ export default function ScanCapturePage() {
   // stored session does not flash the consent form on the way out.
   if (leaving) {
     return (
-      <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-slate-950 px-4 py-10">
-        <div className="scan-grid pointer-events-none absolute inset-0 opacity-20" aria-hidden="true" />
+      <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#fcfaf7] px-4 py-10">
       </main>
     );
   }
 
   if (!sessionId) {
     return (
-      <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-slate-950 px-4 py-10">
-        <div className="scan-grid pointer-events-none absolute inset-0 opacity-20" aria-hidden="true" />
-        <div className="pointer-events-none absolute left-1/2 top-0 h-[38rem] w-[38rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-500/15 blur-[120px]" />
+      <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-[#fcfaf7] px-4 py-10">
+        <div className="pointer-events-none absolute left-1/2 top-0 h-[38rem] w-[38rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#e4c49e]/35 blur-[120px]" />
         <div className="relative z-10 w-full max-w-lg">
           <ConsentForm onConsent={handleConsent} busy={busy} />
           {error && (
-            <p className="mt-4 text-center text-sm text-rose-400" role="alert">
+            <p className="mt-4 text-center text-sm text-[#9e3d3d]" role="alert">
               {error}
             </p>
           )}

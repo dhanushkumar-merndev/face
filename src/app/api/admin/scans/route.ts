@@ -13,8 +13,12 @@ export async function GET(req: NextRequest) {
 
   const supabase = getSupabaseAdmin();
   const searchParams = req.nextUrl.searchParams;
-  const page = Math.max(1, Number(searchParams.get("page") ?? "1"));
-  const pageSize = Math.min(50, Math.max(1, Number(searchParams.get("pageSize") ?? "20")));
+  const requestedPage = Number(searchParams.get("page") ?? "1");
+  const requestedPageSize = Number(searchParams.get("pageSize") ?? "20");
+  const page = Number.isFinite(requestedPage) ? Math.max(1, Math.floor(requestedPage)) : 1;
+  const pageSize = Number.isFinite(requestedPageSize)
+    ? Math.min(50, Math.max(1, Math.floor(requestedPageSize)))
+    : 20;
   const status = searchParams.get("status");
   const ageBand = searchParams.get("ageBand");
 
@@ -24,7 +28,11 @@ export async function GET(req: NextRequest) {
     .order("created_at", { ascending: false })
     .range((page - 1) * pageSize, page * pageSize - 1);
 
-  if (status) query = query.eq("status", status);
+  const validStatuses = new Set([
+    "created", "consented", "recording", "uploading", "uploaded", "analyzing",
+    "completed", "failed", "cancelled", "deletion_requested", "deleted",
+  ]);
+  if (status && validStatuses.has(status)) query = query.eq("status", status);
   if (ageBand) {
     const [low, high] = ageBand.split("-").map(Number);
     if (!Number.isNaN(low) && !Number.isNaN(high)) {

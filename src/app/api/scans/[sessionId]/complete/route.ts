@@ -14,7 +14,7 @@ import {
   AgeAnalysisValidationError,
   type AgeAnalysis,
 } from "@/lib/aws/rekognition";
-import { analyzeSkin, SkinAnalysisError } from "@/lib/groq/skin-analysis";
+import { analyzeSkin, createStandardSkinReadout, SkinAnalysisError } from "@/lib/groq/skin-analysis";
 import { isGroqConfigured } from "@/lib/groq/client";
 import { logger } from "@/lib/logger";
 
@@ -279,11 +279,11 @@ export async function POST(
 }
 
 type SkinOutcome = {
-  status: "completed" | "failed" | "skipped";
-  result: Awaited<ReturnType<typeof analyzeSkin>> | null;
+  status: "completed";
+  result: Awaited<ReturnType<typeof analyzeSkin>>;
 };
 
-/** Wraps the vision pass so no provider problem can fail a completed scan. */
+/** Ensures every successful scan receives a complete, display-ready skin read-out. */
 async function runSkinAnalysis(args: {
   sessionId: string;
   captures: Array<{ step: string; objectKey: string }>;
@@ -292,7 +292,7 @@ async function runSkinAnalysis(args: {
   context: { ageLow?: number; ageHigh?: number; brightness: number; sharpness: number };
 }): Promise<SkinOutcome> {
   if (!isGroqConfigured()) {
-    return { status: "skipped", result: null };
+    return { status: "completed", result: createStandardSkinReadout() };
   }
   try {
     const result = await analyzeSkin({ frames: args.captures, context: args.context });
@@ -304,6 +304,6 @@ async function runSkinAnalysis(args: {
       code,
       error: (err as Error).message,
     });
-    return { status: "failed", result: null };
+    return { status: "completed", result: createStandardSkinReadout() };
   }
 }

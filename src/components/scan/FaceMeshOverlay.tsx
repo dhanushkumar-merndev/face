@@ -12,6 +12,7 @@ import {
   type MeshPoint,
   type MeshTone,
 } from "@/lib/face/mesh";
+import { canvasGuideGeometry, unprojectGuide, type GuideEllipse } from "@/lib/face/guide";
 
 /**
  * The latest inference result, written by the scanner on every frame.
@@ -37,10 +38,13 @@ export function FaceMeshOverlay({
   source,
   tone = "scanning",
   className,
+  guideRef,
 }: {
   source: React.RefObject<MeshFrame | null>;
   tone?: MeshTone;
   className?: string;
+  /** Receives the drawn guide in normalized video coordinates, for the gate. */
+  guideRef?: React.RefObject<GuideEllipse | null>;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [sets, setSets] = useState<ConnectionSets | null>(null);
@@ -122,8 +126,18 @@ export function FaceMeshOverlay({
       const colors = MESH_TONE_COLORS[toneRef.current];
       const hasFace = Boolean(frame && frame.landmarks.length > 0);
 
-      // Always draw the biometric guide overlay
-      drawBiometricGuide(ctx, width, height, elapsed, colors, toneRef.current, hasFace, reduceMotion);
+      // The oval is sized from the viewport, as it always was. Its normalized
+      // equivalent is published back so the quality gate can require the face
+      // to fill this exact ellipse rather than a separate invisible box.
+      const guide = canvasGuideGeometry(width, height);
+      if (guideRef && frame) {
+        guideRef.current = unprojectGuide(
+          guide,
+          computeCoverTransform(frame.videoWidth, frame.videoHeight, width, height)
+        );
+      }
+
+      drawBiometricGuide(ctx, guide, elapsed, colors, toneRef.current, hasFace, reduceMotion);
 
       if (!frame || frame.landmarks.length === 0) {
         smoothed = null;
@@ -215,7 +229,7 @@ export function FaceMeshOverlay({
       running = false;
       cancelAnimationFrame(raf);
     };
-  }, [sets, source]);
+  }, [sets, source, guideRef]);
 
   return (
     <canvas
@@ -246,21 +260,16 @@ function buildPath(points: MeshPoint[], connections: MeshConnection[]): Path2D {
  */
 function drawBiometricGuide(
   ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
+  guide: { cx: number; cy: number; rx: number; ry: number },
   elapsedMs: number,
   colors: { mesh: string; contour: string; beam: string; accent: string },
   tone: MeshTone,
   hasFace: boolean,
   reduceMotion: boolean
 ) {
-  const cx = width / 2;
-  // Position slightly above center to naturally align with human selfie posture
-  const cy = height * 0.44;
-
-  const baseRx = Math.min(width, height) * 0.28;
-  const rx = Math.max(120, Math.min(baseRx, 180));
-  const ry = rx * 1.34;
+  // Geometry comes from lib/face/guide.ts via projectGuide, so this can never
+  // drift away from the rule that decides whether the scan may record.
+  const { cx, cy, rx, ry } = guide;
 
   const pulse = reduceMotion ? 0 : Math.sin(elapsedMs / 700) * 0.02;
   const currentRx = rx * (1 + pulse);

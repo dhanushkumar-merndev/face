@@ -62,22 +62,26 @@ export function PrivateVideoPlayer({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      {clips.map((clip) => (
-        <div key={clip.step} className="flex flex-col gap-1.5">
-          <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-            {clip.step}
-          </p>
-          {/* key forces reload when a new signed URL arrives */}
-          <video
-            key={clip.url}
-            src={clip.url}
-            controls
-            playsInline
-            className="w-full max-w-xl rounded-lg bg-black"
-          />
-        </div>
-      ))}
+    <div className="flex flex-col gap-3">
+      {/* Side by side once there is room; stacked clips made the card tower
+          over everything next to it. */}
+      <div className="grid gap-4 sm:grid-cols-3">
+        {clips.map((clip) => (
+          <div key={clip.step} className="flex flex-col gap-1.5">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+              {clip.step}
+            </p>
+            {/* key forces reload when a new signed URL arrives */}
+            <video
+              key={clip.url}
+              src={clip.url}
+              controls
+              playsInline
+              className="w-full rounded-lg bg-black"
+            />
+          </div>
+        ))}
+      </div>
       <p className="text-xs text-muted-foreground">Signed playback URLs — expire shortly.</p>
     </div>
   );

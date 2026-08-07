@@ -21,7 +21,12 @@ export const SCAN_CONFIG = {
   rightYawMin: 14,
   faceAreaMinRatio: 0.04,
   faceAreaMaxRatio: 0.70,
-  maxCenterOffsetRatio: 0.35,
+  /**
+   * Legacy centring tolerance, used only by the unwired helpers in
+   * lib/face/quality.ts. The live rule is guide containment — see
+   * MIN_INSIDE_GUIDE_RATIO in lib/face/guide.ts.
+   */
+  maxCenterOffsetRatio: 0.18,
   /**
    * Losing the pose for longer than this zeroes the hold progress outright.
    * Scaled up with requiredHoldMs: at a 3s hold, a 400ms window meant one

@@ -22,7 +22,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#020617",
+  themeColor: "#fbf9f5",
   // The scanner is a full-viewport surface; keep it pinned on mobile.
   width: "device-width",
   initialScale: 1,

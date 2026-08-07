@@ -23,6 +23,12 @@ export function isFaceAreaValid(box: FaceBoxLike, frameArea: number): boolean {
   return ratio >= SCAN_CONFIG.faceAreaMinRatio && ratio <= SCAN_CONFIG.faceAreaMaxRatio;
 }
 
+/**
+ * NOT the live centring rule. The scanner tests guide containment instead —
+ * `insideGuideRatio` in lib/face/guide.ts, against the ellipse it also draws.
+ * This box check is retained for its tests only; wiring it back in would
+ * reintroduce the mismatch where a face outside the visible oval still passed.
+ */
 export function isFaceCentered(box: FaceBoxLike, frameWidth: number, frameHeight: number): boolean {
   const faceCenterX = box.x + box.width / 2;
   const faceCenterY = box.y + box.height / 2;

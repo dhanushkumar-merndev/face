@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getAdminSession } from "@/lib/auth/admin";
 import { ScanTableShell } from "@/components/admin/ScanTable";
+import { AdminTopbar } from "@/components/admin/AdminTopbar";
 
 export const metadata = { title: "Admin — Scans" };
 
@@ -8,12 +9,16 @@ export default async function AdminScansPage() {
   const admin = await getAdminSession();
   if (!admin) redirect("/admin/login");
   return (
-    <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-10">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Scans</h1>
-        <p className="text-sm text-muted-foreground">Signed in as {admin.email}</p>
-      </div>
-      <ScanTableShell />
-    </main>
+    <div className="min-h-dvh bg-[#fcfaf7]">
+      <AdminTopbar />
+      <main className="mx-auto flex max-w-7xl flex-col gap-7 px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+        <div className="max-w-2xl">
+          <p className="admin-eyebrow">Review centre</p>
+          <h1 className="admin-heading mt-2">Scan records</h1>
+          <p className="mt-2 text-sm leading-6 text-stone-600">Review completed scans, check captures, and manage data retention from one place.</p>
+        </div>
+        <ScanTableShell />
+      </main>
+    </div>
   );
 }

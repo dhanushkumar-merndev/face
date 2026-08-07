@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  SCAN_CONFIG,
   STEP_INSTRUCTION_TEXT,
   STEP_HINT_TEXT,
   QUALITY_MESSAGE_TEXT,
@@ -42,13 +43,13 @@ export function DirectionInstruction({
       : "Hold on a moment";
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-5 backdrop-blur-xl">
+    <div className="rounded-2xl border border-[#eadbca] bg-white/95 p-4 text-[#3c2718] shadow-[0_12px_32px_rgba(72,43,24,0.12)] backdrop-blur-xl">
       {/* Kept above the instruction: on short desktop viewports anything below
           the hold meter is the first thing clipped, and this is the one line
           that explains why the scan has not started. */}
       {blocked && (
         <p
-          className="mb-3 flex items-center gap-2 text-sm font-medium text-amber-300"
+          className="mb-3 flex items-center gap-2 text-sm font-medium text-[#9a632e]"
           role="status"
           aria-live="polite"
         >
@@ -57,14 +58,16 @@ export function DirectionInstruction({
         </p>
       )}
 
-      <div className="flex items-center gap-4">
+      {/* The panel mirrors for the right turn, so the arrow sits on the side
+          the user is being asked to turn towards. */}
+      <div className={cn("flex items-center gap-3.5", step === "RIGHT" && "flex-row-reverse")}>
         <span
           aria-hidden="true"
           className={cn(
-            "flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border",
+            "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border",
             recording
-              ? "border-rose-400/50 bg-rose-500/20 text-rose-200"
-              : "border-cyan-300/40 bg-cyan-400/15 text-cyan-200"
+              ? "border-[#dba7a7] bg-[#fff0ef] text-[#9e3d3d]"
+              : "border-[#e2c29d] bg-[#fff7ed] text-[#9a632e]"
           )}
         >
           {step === "LEFT" ? (
@@ -77,25 +80,35 @@ export function DirectionInstruction({
         </span>
 
         <div className="min-w-0 flex-1" aria-live="polite">
-          <p className="text-lg font-semibold leading-tight text-white">{headline}</p>
-          <p className="mt-0.5 truncate text-sm text-white/55">{hint}</p>
+          <p className="text-base font-semibold leading-tight text-[#3c2718] sm:text-lg">
+            {headline}
+          </p>
+          {/* Wraps rather than truncates: the hint is the only text that says
+              what to do next, and a cut-off half-sentence helps no one. */}
+          <p className="mt-0.5 text-sm leading-snug text-[#755d4a]">{hint}</p>
         </div>
 
-        {recording && (
-          <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-rose-500/20 px-2.5 py-1">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-rose-400" aria-hidden="true" />
-            <span className="font-mono text-[10px] uppercase tracking-widest text-rose-200">Rec</span>
-          </span>
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {recording && (
+            <span className="flex items-center gap-1.5 rounded-full bg-[#fff0ef] px-2.5 py-1">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-[#a24c4d]" aria-hidden="true" />
+              <span className="font-mono text-[10px] uppercase tracking-widest text-[#9e3d3d]">
+                Rec
+              </span>
+            </span>
+          )}
+          {step && <HoldCountdown holdRatio={holdRatio} recording={recording} />}
+        </div>
       </div>
 
-      {/* Hold meter */}
+      {/* Hold meter — the countdown gives the number, this gives the fine
+          detail of how much of the current second is banked. */}
       {step && (
-        <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/10">
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#efe2d4]">
           <div
             className={cn(
               "h-full rounded-full transition-[width] duration-100",
-              recording ? "bg-rose-400" : "bg-cyan-300"
+              recording ? "bg-[#a24c4d]" : "bg-[#b9824e]"
             )}
             style={{ width: `${Math.round(Math.min(1, holdRatio) * 100)}%` }}
             role="progressbar"
@@ -107,5 +120,40 @@ export function DirectionInstruction({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Seconds left on the hold, as a ring that drains while the pose is held.
+ * Hidden from screen readers: the hold meter below already exposes a
+ * progressbar, and announcing a number every second would be noise.
+ */
+function HoldCountdown({ holdRatio, recording }: { holdRatio: number; recording?: boolean }) {
+  const ratio = Math.max(0, Math.min(1, holdRatio));
+  const secondsLeft = Math.ceil(((1 - ratio) * SCAN_CONFIG.requiredHoldMs) / 1000);
+  const radius = 18;
+  const circumference = 2 * Math.PI * radius;
+
+  return (
+    <span className="relative grid h-12 w-12 shrink-0 place-items-center" aria-hidden="true">
+      <svg viewBox="0 0 44 44" className="absolute inset-0 h-full w-full -rotate-90">
+        <circle cx="22" cy="22" r={radius} fill="none" stroke="#efe2d4" strokeWidth="3.5" />
+        <circle
+          cx="22"
+          cy="22"
+          r={radius}
+          fill="none"
+          stroke={recording ? "#a24c4d" : "#b9824e"}
+          strokeWidth="3.5"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - ratio)}
+          className="transition-[stroke-dashoffset] duration-100"
+        />
+      </svg>
+      <span className="relative font-mono text-sm font-bold tabular-nums text-[#3c2718]">
+        {secondsLeft}
+      </span>
+    </span>
   );
 }

@@ -12,10 +12,10 @@ const LABELS: Array<{ key: keyof SkinAnalysisPayload["scores"]; label: string }>
 
 /** Colour band by score. Every bar also shows its number, never colour alone. */
 function toneFor(score: number): string {
-  if (score >= 75) return "from-emerald-400 to-emerald-300";
-  if (score >= 50) return "from-cyan-400 to-cyan-300";
-  if (score >= 30) return "from-amber-400 to-amber-300";
-  return "from-rose-500 to-rose-400";
+  if (score >= 75) return "from-[#5f7c63] to-[#7d9a81]";
+  if (score >= 50) return "from-[#b9824e] to-[#d5a568]";
+  if (score >= 30) return "from-[#c08d55] to-[#e0b483]";
+  return "from-[#9e3d3d] to-[#c06a6a]";
 }
 
 export function SkinScoreBars({ scores }: { scores: SkinAnalysisPayload["scores"] }) {
@@ -27,13 +27,13 @@ export function SkinScoreBars({ scores }: { scores: SkinAnalysisPayload["scores"
         return (
           <li key={key}>
             <div className="flex items-baseline justify-between">
-              <span className="text-sm text-white/70">{label}</span>
-              <span className="font-mono text-sm font-semibold tabular-nums text-white">
+              <span className="text-sm text-[#6d5543]">{label}</span>
+              <span className="font-mono text-sm font-semibold tabular-nums text-[#3c2718]">
                 {value}
-                <span className="text-white/35">/100</span>
+                <span className="text-[#a9917c]">/100</span>
               </span>
             </div>
-            <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-white/10">
+            <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-[#f3e7da]">
               <div
                 className={`animate-meter h-full rounded-full bg-gradient-to-r ${toneFor(value)}`}
                 style={{ width: `${value}%`, animationDelay: `${i * 70}ms` }}
